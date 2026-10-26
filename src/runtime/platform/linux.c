@@ -169,6 +169,10 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 
 // Fatal error without a terminal: say so in a message box rather than vanishing (the details are in the log).
 void plat_fatal_notice(void) {
+    const char *headless = getenv("TOTK_HEADLESS");
+    if (headless && *headless && strcmp(headless, "0") != 0) {
+        _exit(1);
+    }
     if (!g_log_path[0]) return;
     fflush(stderr);
     char text[1200];
@@ -215,6 +219,10 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
     rt_fault_report(what, fa, pc, lr);
+    const char *headless = getenv("TOTK_HEADLESS");
+    if (headless && *headless && strcmp(headless, "0") != 0) {
+        _exit(1);
+    }
 }
 
 void plat_crash_handler_install(void) {

@@ -60,5 +60,6 @@ uint64_t nvn_registry_guest_address(const char *name) {
     for (unsigned i = 0; i < nvn_thunk_count; i++)
         if (!strcmp(nvn_thunks[i].name, name)) return hle_register(nvn_thunks[i].name, nvn_thunks[i].fn);
     if (nvn_nop_name(name)) return hle_register(name, nvn_nop_thunk);
-    return hle_register(name, NULL);
+    LOG("[nvn] stubbing unknown NVN symbol: %s", name);
+    return hle_register(name, nvn_nop_thunk);
 }

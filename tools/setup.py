@@ -52,6 +52,9 @@ ROMFS_BYTES = 17026725026
 ROMFS_CONTENT = 'b2a2e966a06158e098c03e564f77fd72809bc57275f04eb0725bcde14d522056'
 ENCRYPTED = ('.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz')
 KEEP = {'game', 'data', 'build', 'userdata', 'diag', 'deps', 'dist', 'dev-local'}
+IS_LINUX = sys.platform.startswith('linux')
+EXE_NAME = 'UltraTears' if IS_LINUX else 'UltraTears.exe'
+XLATE_NAME = 'ultrs-shaders' if IS_LINUX else 'ultrs-shaders.exe'
 # Starts the game with the statistics lines in ultratears.log (UltraTears.exe --debug): what a player runs when asked
 # for a performance log.
 DEBUG_BAT = 'UltraTears (debug).bat'
@@ -61,7 +64,8 @@ cd /d "%~dp0"
 start "" UltraTears.exe --debug
 '''
 OUTPUT_OWN = {'setup.bat', 'VERSION.txt', 'THIRD-PARTY-NOTICES.md', 'licenses', 'ultratears.cfg', 'UltraTears.exe',
-              'UltraTears.pdb', 'setup-files.txt', DEBUG_BAT}
+              'UltraTears.pdb', 'setup-files.txt', DEBUG_BAT,
+              'setup.sh', 'UltraTears'}
 
 
 class Fail(Exception):
@@ -239,7 +243,7 @@ def step_check(dump, state):
             if ask('  Build anyway? [y/N] ') not in ('y', 'yes', 'д', 'да'):
                 raise Fail('stopped at the graphics card check (ULTRS_SKIP_GPU_CHECK=1 builds without asking)')
     if toolchain.XLATE is None:
-        raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
+        raise Fail(f'the shader translator deps/shaders/{XLATE_NAME} is missing: run setup again to build it')
     if packed(state) and all(ok_module(DATA / 'exefs' / n, h) for n, h in EXEFS.items()):
         return 'Tears of the Kingdom 1.4.3, already taken in (data\\exefs, data\\romfs): the dump is no longer needed'
     if not dump.is_dir():
@@ -350,7 +354,7 @@ def step_compile(dump, state, cpus):
     run([sys.executable, 'tools/build_game.py', '--generated', DATA / 'generated', '--target', 'ultratears', '--cpus', cpus],
         'compiling')
     record_source_dates()
-    return 'UltraTears.exe'
+    return EXE_NAME
 
 
 # The game reads the translated shaders from one file, data/shaders/translated.pack (issue #22: ~57,000 files before).
@@ -420,8 +424,9 @@ def step_finish(dump, state, cpus):
         shutil.copytree(fonts, DATA / 'fonts', dirs_exist_ok=True)
     lines.append('fonts=data/fonts')
     (ROOT / 'ultratears.cfg').write_text('\n'.join(lines) + '\n')
-    (ROOT / DEBUG_BAT).write_bytes(DEBUG_BAT_TEXT.replace('\n', '\r\n').encode())
-    (ROOT / 'build/UltraTears.exe').unlink(missing_ok=True)   # where builds before 0.1.0 linked it
+    if not IS_LINUX:
+        (ROOT / DEBUG_BAT).write_bytes(DEBUG_BAT_TEXT.replace('\n', '\r\n').encode())
+    (ROOT / f'build/{EXE_NAME}').unlink(missing_ok=True)   # where builds before 0.1.0 linked it
     if (dump / 'romfs').is_dir():
         say(f'  The game reads data\\romfs and data\\exefs now: {dump} (16 GB) is no longer needed.')
         if dump.resolve() == (ROOT / 'game').resolve():
@@ -490,6 +495,11 @@ def main():
         say(f'\nERROR preparing the build tools: {e}')
         sys.exit(1)
     importlib.reload(toolchain)
+    if hasattr(os, 'nice'):   # (Linux: the build below the desktop's priority)
+        try:
+            os.nice(10)
+        except OSError:
+            pass
     state = load_state()
     if a.dump:
         state['dump'] = str(a.dump.resolve())
@@ -514,7 +524,7 @@ def main():
             sys.exit(1)
         save_state(state)
         say(f'  {result or "ok"} ({progress.clock(time.time() - t0 - (ASKED - asked0))})')
-    say(f'\nDone in {progress.clock(time.time() - t_all - ASKED)}. Start the game: UltraTears.exe in {ROOT}')
+    say(f'\nDone in {progress.clock(time.time() - t_all - ASKED)}. Start the game: {EXE_NAME} in {ROOT}')
 
 
 if __name__ == '__main__':
