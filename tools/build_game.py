@@ -56,6 +56,46 @@ def write_if_changed(path, text):   # an unchanged file keeps its time: nothing 
         path.write_text(text, encoding='utf-8')
 
 
+
+def patch_lifted_sead_allocators(gen):
+    """Inject safe direct fallbacks for sead::Heap::alloc and HeapMgr lookups into lifted C code."""
+    for module in ('main', 'subsdk0', 'sdk'):
+        mod_dir = gen / module
+        if not mod_dir.is_dir():
+            continue
+        for c in sorted(mod_dir.glob('*.c')):
+            try:
+                text = c.read_text(encoding='utf-8', errors='replace')
+            except Exception:
+                continue
+            modified = False
+            # 1. f_80006a920 (sead::Heap::alloc)
+            if 'void f_80006a920(Cpu *c) {' in text and 'sead_fallback_heap_alloc' not in text:
+                hook = (
+                    'void f_80006a920(Cpu *c) {\n'
+                    '    if (c->x[1] == 0 || c->x[1] < 0x10000ULL || c->x[1] >= (1ULL << 48)) {\n'
+                    '        extern void *sead_fallback_heap_alloc(uint64_t size, uint64_t align);\n'
+                    '        c->x[0] = (uint64_t)(uintptr_t)sead_fallback_heap_alloc(c->x[0], c->x[2]);\n'
+                    '        return;\n'
+                    '    }'
+                )
+                text = text.replace('void f_80006a920(Cpu *c) {', hook, 1)
+                modified = True
+            # 2. f_8008ac138 (sead::HeapMgr::findContainHeap / sInstance access at 0x758)
+            if 'void f_8008ac138(Cpu *c) {' in text and 'sead_fallback_root_heap' not in text:
+                hook = (
+                    'void f_8008ac138(Cpu *c) {\n'
+                    '    if (c->x[0] == 0 || c->x[0] < 0x10000ULL || c->x[0] >= (1ULL << 48)) {\n'
+                    '        extern void *sead_fallback_root_heap(void);\n'
+                    '        c->x[0] = (uint64_t)(uintptr_t)sead_fallback_root_heap();\n'
+                    '        return;\n'
+                    '    }'
+                )
+                text = text.replace('void f_8008ac138(Cpu *c) {', hook, 1)
+                modified = True
+            if modified:
+                c.write_text(text, encoding='utf-8')
+
 def version_files(build):
     """Write build/version.h and, on Windows, the executable's icon and version resources."""
     v, commit = version.current()
@@ -123,7 +163,7 @@ def main():
         '  deps = gcc',
         *([] if LINUX else ['rule rc', '  command = llvm-windres --target=pe-x86-64 -I . $in -o $out']),
         'rule link',
-        (f'  command = clang -g -o $out @$out.rsp {LIBS}' if LINUX else
+        (f'  command = clang -g -Wl,--wrap=f_80006a920 -Wl,--wrap=f_802bb74c0 -Wl,--wrap=f_8008ac138 -o $out @$out.rsp {LIBS}' if LINUX else
          f'  command = clang -g -Wl,--pdb=$pdb -o $out @$out.rsp {LIBS}'),
         '  rspfile = $out.rsp',
         '  rspfile_content = $in',
@@ -146,6 +186,7 @@ def main():
             lines.append(f'build {obj}: {"gfxcxx" if cxx else "gfxcc"} {src}')
             objs.append(obj)
     game_objs = []
+    patch_lifted_sead_allocators(gen)
     for module in ('main', 'subsdk0', 'sdk'):
         for c in sorted((gen / module).glob('*.c')):
             obj = f'build/game/{module}/{c.stem}.o'

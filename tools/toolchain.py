@@ -30,8 +30,13 @@ def _clang64():
 
 LINUX_TOOLS = {name: _linux_tool(name) for name in ('clang', 'clang++', 'ninja')} if sys.platform == 'linux' else {}
 CLANG64 = None if sys.platform == 'linux' else _clang64()
-XLATE = next((p for p in (ROOT / 'deps/shaders/ultrs-shaders.exe', ROOT / 'dev-local/build/shaders/ultrs-shaders.exe') if p.is_file()),
-             None)
+XLATE_CANDIDATES = [
+    ROOT / "deps/shaders/ultrs-shaders",
+    ROOT / "deps/shaders/ultrs-shaders.exe",
+    ROOT / "dev-local/build/shaders/ultrs-shaders",
+    ROOT / "dev-local/build/shaders/ultrs-shaders.exe",
+]
+XLATE = next((p for p in XLATE_CANDIDATES if p.is_file()), None)
 
 
 def env():
