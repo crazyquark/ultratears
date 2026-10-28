@@ -47,9 +47,11 @@ downloads the same tool bundle first, then performs the same game build.
 
 - Windows 10/11 x64 and a processor with AVX2 (Intel Haswell / AMD Ryzen or newer).
 - A graphics card with a current Vulkan 1.3 driver and `VK_EXT_shader_object` (recent NVIDIA, AMD and Intel drivers).
-- 16 GB of RAM.
-- About **32 GB free for the build output**, plus about 16 GB for the original game dump. The original dump in the
-  working folder is no longer needed after a successful build.
+- At least **16 GB of RAM** and a graphics card with at least **4 GB of video memory**. A PC with 8 GB of RAM, or a
+  GPU that shares the system memory (integrated graphics), is not supported for now.
+- At least **40 GB free** on the drive of the game folder (an SSD is recommended): the build takes about 32 GB, and the
+  texture cache grows while you play. The original game dump needs about 16 GB more; the dump in the working folder is
+  no longer needed after a successful build.
 - **Your own extracted copy of Tears of the Kingdom version 1.4.3** as two ordinary folders:
 
   ```text
