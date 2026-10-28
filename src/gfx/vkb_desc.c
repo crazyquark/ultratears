@@ -116,9 +116,12 @@ void vkb_db_slot_reset(int slot) {   // the slot's previous submission is comple
 uint64_t vkb_db_gen(void) { return g_gen; }
 
 // ---- the bytes of one descriptor, per submission (tables per recording thread)
-enum { CACHE = 1 << 15 };
-typedef struct { uint64_t rec, k0, k1, k2, k3; uint8_t len, bytes[63]; } dcache_t;
-static __thread dcache_t *g_cache;
+// An entry holds the device's largest descriptor: 64 bytes a combined image sampler on NVIDIA, 96 on RADV (Steam Deck:
+// a fixed 63 stopped the game there at its first draw, 2026-10-29).
+enum { CACHE = 1 << 15, DESC_MAX = 256 };
+typedef struct { uint64_t rec, k0, k1, k2, k3; uint8_t len, bytes[]; } dcache_t;
+static __thread uint8_t *g_cache;
+static size_t g_stride;   // entry size: the header and the largest descriptor, 8-byte aligned
 static vkb_cnt g_get_calls, g_cache_hits;
 typedef struct { uint64_t rec; VkBuffer buf; VkDeviceAddress addr; } addr_t;
 static __thread addr_t *g_addr;   // 4096
@@ -148,19 +151,26 @@ static const uint8_t *descriptor(const VkWriteDescriptorSet *w, uint64_t rec, si
     uint64_t k0 = (uint64_t)w->descriptorType, k1, k2, k3;
     if (w->pBufferInfo) { k1 = (uint64_t)(uintptr_t)w->pBufferInfo->buffer; k2 = w->pBufferInfo->offset; k3 = w->pBufferInfo->range; }
     else { k1 = (uint64_t)(uintptr_t)w->pImageInfo->sampler; k2 = (uint64_t)(uintptr_t)w->pImageInfo->imageView; k3 = (uint64_t)w->pImageInfo->imageLayout; }
-    if (!g_cache && !(g_cache = calloc(CACHE, sizeof *g_cache))) die("descriptor cache");
+    if (!g_stride) {
+        size_t big = 0;
+        static const VkDescriptorType ty[] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+        for (int i = 0; i < 4; i++) if (type_size(ty[i]) > big) big = type_size(ty[i]);
+        if (big > DESC_MAX) die("descriptor of %zu bytes", big);
+        g_stride = (sizeof(dcache_t) + big + 7) & ~(size_t)7;
+    }
+    if (!g_cache && !(g_cache = calloc(CACHE, g_stride))) die("descriptor cache");
     uint64_t h = (k0 * 0x9e3779b97f4a7c15ull) ^ (k1 * 0xc2b2ae3d27d4eb4full) ^ (k2 * 0x165667b19e3779f9ull) ^ (k3 * 0x27d4eb2f165667c5ull);
     uint32_t at = (uint32_t)(h >> 49) & (CACHE - 1);
     dcache_t *e = NULL;
     for (int probe = 0; probe < 16; probe++) {
-        dcache_t *c = &g_cache[(at + (uint32_t)probe) & (CACHE - 1)];
+        dcache_t *c = (dcache_t *)(g_cache + (size_t)((at + (uint32_t)probe) & (CACHE - 1)) * g_stride);
         if (c->rec == rec && c->k0 == k0 && c->k1 == k1 && c->k2 == k2 && c->k3 == k3) { vkb_cnt_add(g_cache_hits, 1); *len = c->len; return c->bytes; }
         if (c->rec != rec) { e = c; break; }
     }
-    static __thread uint8_t spill[64];   // the table region is full: no caching for this one
+    static __thread uint8_t spill[DESC_MAX];   // the table region is full: no caching for this one
     uint8_t *out = e ? e->bytes : spill;
     size_t n = type_size(w->descriptorType);
-    if (n > 63) die("descriptor of %zu bytes", n);
     VkDescriptorGetInfoEXT gi = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, .type = w->descriptorType};
     VkDescriptorAddressInfoEXT ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
     if (w->pBufferInfo) {
