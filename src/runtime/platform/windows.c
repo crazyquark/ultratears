@@ -217,14 +217,19 @@ void plat_thread_realtime(uint64_t period_ns) {
 // (the start screen re-executing itself for the game) append to the same log.
 static char g_log_path[MAX_PATH];
 
+// TOTK_LOG_FILE=1 (or a path): the log goes to the file even with a console - under Proton the game gets a console
+// window that closes with it, and PROTON_LOG has only Wine's own lines.
 static void log_to_file_without_console(void) {
-    if (GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
+    const char *force = getenv("TOTK_LOG_FILE");
+    if (force && !*force) force = NULL;
+    if (!force && GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
     char exe[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
     if (!n || n >= sizeof exe) return;
     char *slash = strrchr(exe, '\\');
     if (slash) slash[1] = 0;
-    snprintf(g_log_path, sizeof g_log_path, "%sultratears.log", exe);
+    if (force && strcmp(force, "1") != 0) snprintf(g_log_path, sizeof g_log_path, "%s", force);
+    else snprintf(g_log_path, sizeof g_log_path, "%sultratears.log", exe);
     bool append = getenv("TOTK_LOG_APPEND") != NULL;
     if (!freopen(g_log_path, append ? "ab" : "wb", stderr)) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
