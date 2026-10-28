@@ -52,8 +52,16 @@ ROMFS_CONTENT = 'b2a2e966a06158e098c03e564f77fd72809bc57275f04eb0725bcde14d52205
 ENCRYPTED = ('.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz')
 GITHUB_RELEASES = 'https://api.github.com/repos/kuraeow/ultratears/releases?per_page=20'
 KEEP = {'game', 'data', 'build', 'userdata', 'diag', 'deps', 'dist', 'dev-local'}
+# Starts the game with the statistics lines in ultratears.log (UltraTears.exe --debug): what a player runs when asked
+# for a performance log.
+DEBUG_BAT = 'UltraTears (debug).bat'
+DEBUG_BAT_TEXT = '''@echo off
+rem UltraTears with the statistics lines in ultratears.log (frame timing, memory): for bug and performance reports.
+cd /d "%~dp0"
+start "" UltraTears.exe --debug
+'''
 OUTPUT_OWN = {'setup.bat', 'VERSION.txt', 'THIRD-PARTY-NOTICES.md', 'licenses', 'ultratears.cfg', 'UltraTears.exe',
-              'UltraTears.pdb', 'setup-files.txt'}
+              'UltraTears.pdb', 'setup-files.txt', DEBUG_BAT}
 
 
 class Fail(Exception):
@@ -388,6 +396,7 @@ def step_finish(dump, state, cpus):
         shutil.copytree(fonts, DATA / 'fonts', dirs_exist_ok=True)
     lines.append('fonts=data/fonts')
     (ROOT / 'ultratears.cfg').write_text('\n'.join(lines) + '\n')
+    (ROOT / DEBUG_BAT).write_bytes(DEBUG_BAT_TEXT.replace('\n', '\r\n').encode())
     (ROOT / 'build/UltraTears.exe').unlink(missing_ok=True)   # where builds before 0.1.0 linked it
     if (dump / 'romfs').is_dir():
         say(f'  The game reads data\\romfs and data\\exefs now: {dump} (16 GB) is no longer needed.')

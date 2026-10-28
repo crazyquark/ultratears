@@ -86,8 +86,13 @@ static const char *default_exefs(void) {
 int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     fprintf(stderr, "UltraTears %s (commit %s)\n", ULTRS_VERSION, ULTRS_COMMIT);   // first line of every log
-    if (argc > 2) { fprintf(stderr, "usage: UltraTears [exefs dir]\n"); return 2; }
-    const char *exefs = argc == 2 ? argv[1] : default_exefs();
+    // --debug: the statistics lines in the log (TOTK_STATS=1; "UltraTears (debug).bat" that setup.py writes)
+    const char *arg = NULL;
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--debug")) setenv("TOTK_STATS", "1", 1);
+        else if (!arg) arg = argv[i];
+        else { fprintf(stderr, "usage: UltraTears [--debug] [exefs dir]\n"); return 2; }
+    const char *exefs = arg ? arg : default_exefs();
     plat_init();
     plat_crash_handler_install();
     if (!g_window) {
