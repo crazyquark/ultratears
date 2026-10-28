@@ -634,6 +634,7 @@ static void *ahead_thread(void *unused) {
         uint64_t ft = (uint64_t)fd.ftLastWriteTime.dwHighDateTime << 32 | fd.ftLastWriteTime.dwLowDateTime;
         uint64_t mtime = ft >= 116444736000000000ull ? (ft - 116444736000000000ull) / 10000000ull : 0;   // FILETIME -> Unix seconds
         vkb_shbin_variant v0 = {{0}, stamp_of(mtime, (uint64_t)fd.nFileSizeHigh << 32 | fd.nFileSizeLow)};
+        vkb_shbin_mark(key, v0.stamp);   // the binaries of other stamps are old (vkb_shbin_compact)
         if (vkb_shbin_has(key, &v0)) { atomic_fetch_add(&g_ahead_done, 1); continue; }
         char path[1024];
         snprintf(path, sizeof path, "%s/%s", cache_dir(), fd.cFileName);
@@ -660,6 +661,7 @@ static void *ahead_thread(void *unused) {
     FindClose(h);
     VLOG("shaders compiled ahead: %llu new of %llu, %.0f s", (unsigned long long)g_ahead_made, (unsigned long long)g_ahead_total,
          (runtime_now_ns() - t0) / 1e9);
+    vkb_shbin_compact();
     return NULL;
 }
 static void ahead_start(void) {

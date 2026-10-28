@@ -16,3 +16,7 @@ void vkb_shbin_put(const char *key, const vkb_shbin_variant *v, const void *data
 // The binary was refused by the driver (vkCreateShadersEXT): forgotten, made again from SPIR-V.
 void vkb_shbin_drop(const char *key, const vkb_shbin_variant *v);
 void vkb_shbin_stats(uint64_t *records, uint64_t *bytes, uint64_t *hits, uint64_t *misses);
+// The shader key's current translation stamp (the compile-ahead pass, for every shader); then compact: the file
+// written again without the binaries of earlier translations / rewrites, when they take much of it.
+void vkb_shbin_mark(const char *key, uint32_t stamp);
+void vkb_shbin_compact(void);

@@ -8,6 +8,10 @@
 //   record: tag "SHB1", key (32 bytes, the SHA-256 the key's hex digits spell), variant masks (5 x u32), translation
 //   stamp (u32), size (u32), data
 // A record cut short (the game stopped while writing) and what follows it are dropped when the file is opened.
+// Records are only appended: a shader translated again, or a change to the rewrites at load (its stamp), leaves the
+// old binaries behind (836 -> 1214 MiB after the depth compare clamp, 2026-10-29). After the compile-ahead pass has
+// told every shader's current stamp (vkb_shbin_mark), vkb_shbin_compact writes the file again without them.
+#include <windows.h>   // MoveFileExA
 #include <io.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +21,7 @@
 #include "host/hle.h"
 #include "vkb.h"
 #include "vkb_shbin.h"
+#include "vkb_lock.h"   // runtime_now_ns
 
 #define VLOG(...) LOG("[vk] " __VA_ARGS__)
 
@@ -30,6 +35,9 @@ static FILE *g_f;
 static uint64_t g_end, g_records, g_bytes, g_hits, g_misses;
 static int g_init;   // 0 not yet, 1 open, -1 none (no file: nothing kept)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static char g_path[1024];
+typedef struct { uint8_t key[32]; uint32_t stamp; uint8_t used; } cur_t;   // a shader's current stamp (vkb_shbin_mark)
+static cur_t *g_cur;
 
 static int unhex(const char *key, uint8_t out[32]) {
     for (int i = 0; i < 32; i++) {
@@ -69,6 +77,7 @@ static void open_file(void) {   // g_mu held
     if (!(g_tab = calloc(CAP, sizeof *g_tab))) return;
     const char *path = getenv("TOTK_SHADER_BIN");
     if (!path || !*path) path = "data/shaders/compiled.bin";   // the driver's, apart from the translated shaders
+    snprintf(g_path, sizeof g_path, "%s", path);
     uint8_t want[HEADER] = {0};
     memcpy(want, MAGIC, 8);
     memcpy(want + 8, vkc.so.shaderBinaryUUID, 16);
@@ -180,4 +189,109 @@ void vkb_shbin_stats(uint64_t *records, uint64_t *bytes, uint64_t *hits, uint64_
     pthread_mutex_lock(&g_mu);
     *records = g_records; *bytes = g_bytes; *hits = g_hits; *misses = g_misses;
     pthread_mutex_unlock(&g_mu);
+}
+
+static cur_t *cur_find(const uint8_t key[32], int add) {   // g_mu held
+    if (!g_cur && !(g_cur = calloc(CAP, sizeof *g_cur))) return NULL;
+    uint32_t h;
+    memcpy(&h, key, 4);
+    for (uint32_t i = 0; i < CAP; i++) {
+        cur_t *c = &g_cur[(h + i) & (CAP - 1)];
+        if (!c->used) {
+            if (!add) return NULL;
+            memcpy(c->key, key, 32);
+            c->used = 1;
+            return c;
+        }
+        if (!memcmp(c->key, key, 32)) return c;
+    }
+    return NULL;
+}
+void vkb_shbin_mark(const char *key, uint32_t stamp) {
+    uint8_t k[32];
+    if (!unhex(key, k)) return;
+    pthread_mutex_lock(&g_mu);
+    cur_t *c = cur_find(k, 1);
+    if (c) c->stamp = stamp;
+    pthread_mutex_unlock(&g_mu);
+}
+
+// The live records (a shader translated as it is now: its stamp) are copied into a new file a record at a time, the
+// lock taken for each read only, so the game's lookups wait for at most one record; then, under the lock, the records
+// added meanwhile and the swap. Done when the old ones are over 128 MiB and a quarter of the file.
+void vkb_shbin_compact(void) {
+    pthread_mutex_lock(&g_mu);
+    if (!ready() || !g_cur) { pthread_mutex_unlock(&g_mu); return; }
+    uint64_t live = 0, file = g_end;
+    for (uint32_t i = 0; i < CAP; i++) {
+        const slot_t *t = &g_tab[i];
+        if (t->state != 1) continue;
+        const cur_t *c = cur_find(t->key, 0);
+        if (c && c->stamp == t->v.stamp) live += RECORD + t->size;
+    }
+    uint64_t dead = file - HEADER - live;
+    pthread_mutex_unlock(&g_mu);
+    if (dead < (128ull << 20) || dead * 4 < file) return;
+    uint64_t t0 = runtime_now_ns();
+    uint64_t *newoff = calloc(CAP, sizeof *newoff);   // per slot: its offset in the new file (0: not copied)
+    char tmp[1040];
+    snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
+    FILE *o = newoff ? fopen(tmp, "wb") : NULL;
+    uint8_t head[HEADER] = {0};
+    memcpy(head, MAGIC, 8);
+    memcpy(head + 8, vkc.so.shaderBinaryUUID, 16);
+    memcpy(head + 24, &vkc.so.shaderBinaryVersion, 4);
+    int ok = o && fwrite(head, 1, HEADER, o) == HEADER;
+    uint64_t at = HEADER, copied = 0;
+    void *buf = NULL;
+    size_t cap = 0;
+    for (int pass = 0; pass < 2 && ok; pass++) {   // 1: the records added during pass 0, the lock held
+        if (pass == 1) pthread_mutex_lock(&g_mu);
+        for (uint32_t i = 0; i < CAP && ok; i++) {
+            if (pass == 0) pthread_mutex_lock(&g_mu);
+            slot_t *t = &g_tab[i];
+            const cur_t *c = t->state == 1 && !newoff[i] ? cur_find(t->key, 0) : NULL;
+            int take = c && c->stamp == t->v.stamp;
+            uint8_t r[RECORD];
+            uint64_t off = t->off;
+            uint32_t size = t->size;
+            if (take && size > cap) { free(buf); cap = size; if (!(buf = malloc(cap))) ok = 0; }
+            if (take && ok) {
+                memcpy(r, &TAG, 4); memcpy(r + 4, t->key, 32); memcpy(r + 36, &t->v, sizeof t->v); memcpy(r + 60, &size, 4);
+                ok = !_fseeki64(g_f, (long long)off, SEEK_SET) && fread(buf, 1, size, g_f) == size;
+            }
+            if (pass == 0) pthread_mutex_unlock(&g_mu);
+            if (!take || !ok) continue;
+            if (fwrite(r, 1, RECORD, o) != RECORD || fwrite(buf, 1, size, o) != size) { ok = 0; break; }
+            newoff[i] = at + RECORD;
+            at += RECORD + size;
+            copied++;
+        }
+        if (pass == 1) break;   // still locked: the swap below
+    }
+    if (!ok) { if (o) fclose(o); remove(tmp); }
+    else {   // g_mu held: a record dropped or replaced during pass 0 keeps nothing of its copy (off changed / state)
+        ok = fflush(o) == 0 && fclose(o) == 0;
+        fclose(g_f);
+        g_f = NULL;
+        if (ok && MoveFileExA(tmp, g_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            g_records = g_bytes = 0;
+            for (uint32_t i = 0; i < CAP; i++) {
+                slot_t *t = &g_tab[i];
+                if (t->state != 1) continue;
+                if (newoff[i]) { t->off = newoff[i]; g_records++; g_bytes += t->size; }
+                else t->state = 2;   // left behind
+            }
+            g_end = at;
+        } else {
+            remove(tmp);
+            ok = 0;
+        }
+        if (!(g_f = fopen(g_path, "r+b"))) g_init = -1;   // (the old file when the swap failed)
+        pthread_mutex_unlock(&g_mu);
+    }
+    free(buf);
+    free(newoff);
+    VLOG("shader binaries: %s: %llu kept, %.0f -> %.0f MiB, %.1f s", ok ? "old ones dropped" : "could not drop the old ones",
+         (unsigned long long)copied, file / 1048576.0, (ok ? at : file) / 1048576.0, (runtime_now_ns() - t0) / 1e9);
 }
