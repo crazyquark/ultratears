@@ -905,12 +905,26 @@ static void astc_upload(VkCommandBuffer cb, vkb_image *im, const uint8_t *src, i
 }
 uint64_t vkb_bc7_images(void) { return g_bc7_images; }
 
+// Uploads over 20 ms (the first 300): which texture and why it was uploaded again. On the Steam Deck the same ~1 s of
+// uploads came back every few submissions (2026-10-29); on the PC there are a few, while loading.
+static void slow_upload_log(const vkb_image *im, const char *why, uint64_t t0, uint64_t size, int vpool) {
+    uint64_t dt = runtime_now_ns() - t0;
+    static _Atomic int said;
+    if (dt < 20000000 || atomic_fetch_add(&said, 1) >= 300) return;
+    VLOG("slow upload: texture %llu format %#x %ux%ux%u, %u levels, %u layers, %.1f MiB%s%s: %.1f ms (%s)", (unsigned long long)im->serial,
+         im->d.format, im->width, im->height, im->depth, im->levels, im->layers, size / 1048576.0, vpool ? ", in a virtual pool" : "",
+         im->astc ? ", ASTC" : "", dt / 1e6, why);
+}
 static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
     if (!im->storage || im->gpu_written) return 0;
     const nvn_texdesc *d = &im->d;
     nvn_texlayout L;
     nvn_tex_layout(d, &L);
     if (im->upload_stamp && !vkb_tex_stale(im)) return 0;   // unchanged since the upload (checked once per submission)
+    // why (the slow-upload log line below): first time, a CPU texel write, a virtual pool remapped, its pages written
+    const char *why = !im->upload_stamp ? "first" : im->cpu_written ? "CPU texel write"
+                    : im->vpool_gen && im->vpool_gen != totk_vpool_generation() ? "virtual pool remapped" : "pages written";
+    uint64_t up_t0 = runtime_now_ns();
     im->stale = 0;
     im->cpu_written = 0;
     if (vkb_rt_log_d(d)) VLOG("[rtlog] image %llu uploaded from game memory %p, present %llu", (unsigned long long)im->serial, (const void *)im->storage,
@@ -961,6 +975,7 @@ static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
     int srgb = d->format >= 0x87 && d->format <= 0x94;
     if (im->astc && vkb_bc7_on() && bpb == 16) {
         astc_upload(cb, im, src, bw, bh, srgb);
+        slow_upload_log(im, why, up_t0, L.size, gathered != NULL);
         free(gathered);
         __atomic_store_n(&im->uploading, 0, __ATOMIC_RELEASE);
         return 1;
@@ -995,6 +1010,7 @@ static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
         }
     }
     astc_run();   // the copies recorded above read these texels when the submission runs
+    slow_upload_log(im, why, up_t0, L.size, gathered != NULL);
     free(gathered);
     __atomic_store_n(&im->uploading, 0, __ATOMIC_RELEASE);
     return 1;
