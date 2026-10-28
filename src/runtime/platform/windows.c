@@ -233,6 +233,11 @@ static void log_to_file_without_console(void) {
     if (force && strcmp(force, "1") != 0) snprintf(g_log_path, sizeof g_log_path, "%s", force);
     else snprintf(g_log_path, sizeof g_log_path, "%sultratears.log", exe);
     bool append = getenv("TOTK_LOG_APPEND") != NULL;
+    if (!append && (!force || !strcmp(force, "1"))) {   // the last run's log stays as ultratears-previous.log: a player restarting after a crash keeps it
+        char prev[MAX_PATH];
+        snprintf(prev, sizeof prev, "%sultratears-previous.log", exe);
+        MoveFileExA(g_log_path, prev, MOVEFILE_REPLACE_EXISTING);
+    }
     if (!freopen(g_log_path, append ? "ab" : "wb", stderr)) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
     _dup2(_fileno(stderr), _fileno(stdout));
