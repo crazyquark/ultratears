@@ -145,10 +145,14 @@ void plat_memory_map(void) {
         a = base + size;
     }
     const double M = 1048576.0;
-    fprintf(stderr, "[mem] commit charge %.0f MiB (peak %.0f), in RAM %.0f MiB (peak %.0f); committed: guest window %.0f, "
-            "heaps %.0f (in use %.0f, %d regions; %.0f found by the walk), other private %.0f, mapped %.0f, images %.0f MiB\n",
-            pc.PrivateUsage / M, pc.PeakPagefileUsage / M, pc.WorkingSetSize / M, pc.PeakWorkingSetSize / M, guest / M,
-            heap_commit / M, heap_used / M, nhr, in_heap / M, priv / M, mapped / M, image / M);
+    static DWORD faults_before;   // page faults since the last map (with a simulated small PC: pages trimmed and back)
+    fprintf(stderr, "[mem] commit charge %.0f MiB (peak %.0f), in RAM %.0f MiB (peak %.0f), page faults %lu since the last; "
+            "committed: guest window %.0f, heaps %.0f (in use %.0f, %d regions; %.0f found by the walk), other private %.0f, "
+            "mapped %.0f, images %.0f MiB\n",
+            pc.PrivateUsage / M, pc.PeakPagefileUsage / M, pc.WorkingSetSize / M, pc.PeakWorkingSetSize / M,
+            pc.PageFaultCount - faults_before, guest / M, heap_commit / M, heap_used / M, nhr, in_heap / M, priv / M,
+            mapped / M, image / M);
+    faults_before = pc.PageFaultCount;
     static const char *const cls[NB] = {"<64K", "64K-1M", "1-4M", "4-16M", "16-63M", "~64M", ">65M"};
     char line[512];
     int at = 0;
@@ -271,9 +275,39 @@ void plat_fatal_notice(void) {
     MessageBoxA(NULL, text, "UltraTears", MB_ICONERROR | MB_OK);
 }
 
+// Development: run as on a PC with less memory (L7, #31). TOTK_SIM_RAM_GB=8 or 16: the RAM a game gets there next to
+// Windows and the usual programs (the total less 3 GB) as a hard working-set limit (pages over it are trimmed and
+// fault back: from RAM here, so this shows the trimming, not a slow disk), and a commit limit of 1.5 times that
+// (allocations over it fail as on a PC whose page file is full). TOTK_SIM_RAM_MB / TOTK_SIM_COMMIT_MB set them
+// exactly. Video memory the driver keeps on the GPU is in the commit but not in the working set.
+static void simulate_small_pc(void) {
+    const char *gb = getenv("TOTK_SIM_RAM_GB"), *ram = getenv("TOTK_SIM_RAM_MB"), *com = getenv("TOTK_SIM_COMMIT_MB");
+    uint64_t ws = 0, commit = 0;
+    if (gb && atoi(gb) > 3) ws = (uint64_t)(atoi(gb) - 3) << 30, commit = ws * 3 / 2;
+    if (ram && atoi(ram) > 0) ws = (uint64_t)atoi(ram) << 20;
+    if (com && atoi(com) > 0) commit = (uint64_t)atoi(com) << 20;
+    if (ws) {
+        BOOL ok = SetProcessWorkingSetSizeEx(GetCurrentProcess(), 64 << 20, (SIZE_T)ws,
+                                             QUOTA_LIMITS_HARDWS_MAX_ENABLE | QUOTA_LIMITS_HARDWS_MIN_DISABLE);
+        fprintf(stderr, "[plat] simulated PC: working set at most %llu MiB%s (%lu)\n", (unsigned long long)(ws >> 20),
+                ok ? "" : " - not set", ok ? 0ul : GetLastError());
+    }
+    if (commit) {
+        HANDLE job = CreateJobObjectW(NULL, NULL);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        li.ProcessMemoryLimit = (SIZE_T)commit;
+        BOOL ok = job && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) &&
+                  AssignProcessToJobObject(job, GetCurrentProcess());
+        fprintf(stderr, "[plat] simulated PC: commit at most %llu MiB%s (%lu)\n", (unsigned long long)(commit >> 20),
+                ok ? "" : " - not set", ok ? 0ul : GetLastError());
+    }
+}
+
 void plat_init(void) {
     log_to_file_without_console();
     require_cpu();
+    simulate_small_pc();
     _fmode = _O_BINARY;  // fopen/open default to binary (the runtime's "r"/"w" files are binary or LF text)
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);

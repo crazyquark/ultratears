@@ -39,6 +39,7 @@ int vkb_in_pass(void);
 // Host-visible upload memory of the current submission (reused after its fence): n bytes aligned to `align`.
 void *vkb_ring_alloc(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);
 void vkb_ring_stats(uint64_t *chunks, uint64_t *bytes, uint64_t *pairs);   // upload memory now: chunks, bytes, slot x thread pairs
+void vkb_ring_counts(uint64_t *peak, uint64_t *made, uint64_t *freed);   // its peak bytes; chunks made and given back so far
 // What the next vkAllocateMemory of this thread is for (the memory log counts by it; reset by the allocation).
 enum { MT_OTHER, MT_IMAGE, MT_RING, MT_DESC, MT_POOL_COPY, MT_MIRROR, MT_UCAP, MT_WRITEBACK, MT_COPY_BACK, MT_N };
 extern __thread int vkb_mtag;

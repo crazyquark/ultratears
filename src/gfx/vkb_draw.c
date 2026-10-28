@@ -22,11 +22,15 @@
 
 // ---------------- upload memory and descriptor pools, per command slot ----------------
 typedef struct { VkBuffer buf; VkDeviceMemory mem; uint8_t *map; VkDeviceSize size, used; } chunk_t;
-typedef struct { chunk_t c[32]; int n, cur, peak, resets; VkDescriptorPool pool[64]; int npool, curpool; } slot_res;
+typedef struct { chunk_t c[32]; int n, cur, peak, resets, fpeak, fresets; VkDescriptorPool pool[64]; int npool, curpool; } slot_res;
 // Upload memory grows from a small chunk (doubling up to RING_MAX, or the size of one large upload) and gives back the
 // chunks a slot and thread did not touch over RING_TRIM of the slot's submissions. Before: chunks of at least 64 MiB
 // per slot and recording thread, kept for good - 1.9-2.6 GB of host memory after a load and a run (2026-10-28, L7).
-enum { RING_MIN = 4u << 20, RING_MAX = 64u << 20, RING_TRIM = 120 };
+// Past the first RING_BASE bytes the chunks go back sooner, after RING_FAST untouched submissions of the slot (~4 s):
+// a load or teleport grew the rings to 0.7-0.9 GB, kept for ~30 s at the moment the new place's images arrive too
+// (the session's peak commit, 2026-10-28).
+enum { RING_MIN = 4u << 20, RING_MAX = 64u << 20, RING_TRIM = 120, RING_BASE = 12u << 20, RING_FAST = 16 };
+static _Atomic uint64_t g_ring_bytes, g_ring_peak, g_ring_made, g_ring_freed;   // memory log
 static slot_res g_res[VKB_SLOTS][VKB_MAXREC];   // per slot and recording thread (vkb_mt.c)
 static struct { VkBuffer buf; VkDeviceMemory mem; VkDeviceSize used; } g_mpool[VKB_SLOTS];   // device memory for mirrors
 static uint32_t g_ring_type = UINT32_MAX;
@@ -58,18 +62,33 @@ static int chunk_new(chunk_t *c, VkDeviceSize size) {
     void *m;
     if (!vk_check(vk.vkMapMemory(vkc.device, c->mem, 0, VK_WHOLE_SIZE, 0, &m), "map upload memory")) return 0;
     c->map = m; c->size = size; c->used = 0;
+    uint64_t now = atomic_fetch_add(&g_ring_bytes, size) + size, p = atomic_load(&g_ring_peak);
+    while (now > p && !atomic_compare_exchange_weak(&g_ring_peak, &p, now)) {}
+    atomic_fetch_add(&g_ring_made, 1);
     return 1;
 }
 static void chunk_free(chunk_t *c) {   // no submission uses it (its slot's last one is done)
     vk.vkDestroyBuffer(vkc.device, c->buf, NULL);
     vk.vkFreeMemory(vkc.device, c->mem, NULL);   // unmaps
+    atomic_fetch_sub(&g_ring_bytes, c->size);
+    atomic_fetch_add(&g_ring_freed, 1);
     memset(c, 0, sizeof *c);
 }
-// The slot's previous submission is done: chunks this pair has not touched over RING_TRIM submissions go back.
+// The slot's previous submission is done: chunks this pair has not touched over RING_TRIM submissions go back, and
+// those past its first RING_BASE bytes over RING_FAST.
 static void ring_trim(slot_res *r) {
     int touched = r->n;   // the chunks up to the last one written
     while (touched > 0 && !r->c[touched - 1].used) touched--;
     if (touched > r->peak) r->peak = touched;
+    if (touched > r->fpeak) r->fpeak = touched;
+    if (++r->fresets >= RING_FAST) {
+        int base = 0;   // the leading chunks within RING_BASE (at least the first)
+        for (VkDeviceSize sum = 0; base < r->n && (base == 0 || sum + r->c[base].size <= RING_BASE); base++) sum += r->c[base].size;
+        int keep = r->fpeak > base ? r->fpeak : base;
+        while (r->n > keep) chunk_free(&r->c[--r->n]);
+        r->fpeak = 0;
+        r->fresets = 0;
+    }
     if (++r->resets < RING_TRIM) return;
     while (r->n > r->peak) chunk_free(&r->c[--r->n]);
     r->peak = 0;
@@ -101,6 +120,11 @@ void vkb_slot_reset(int slot) {   // the slot's previous submission has complete
     g_mpool[slot].used = 0;
 }
 
+void vkb_ring_counts(uint64_t *peak, uint64_t *made, uint64_t *freed) {
+    *peak = atomic_load(&g_ring_peak);
+    *made = atomic_load(&g_ring_made);
+    *freed = atomic_load(&g_ring_freed);
+}
 void vkb_ring_stats(uint64_t *chunks, uint64_t *bytes, uint64_t *pairs) {   // memory log (racy reads: counts only)
     *chunks = *bytes = *pairs = 0;
     for (int s = 0; s < VKB_SLOTS; s++)

@@ -164,6 +164,12 @@ static void memory_log(void) {
          (unsigned long long)atomic_load(&g_mem_count[MK_DEVICE]), atomic_load(&g_mem_peak[MK_DEVICE]) / 1048576.0, vkb_shadow_bytes() / 1048576.0,
          atomic_load(&g_mem_bytes[MK_HOST]) / 1048576.0, atomic_load(&g_mem_peak[MK_HOST]) / 1048576.0, atomic_load(&g_mem_bytes[MK_IMPORT]) / 1048576.0);
     vkb_shader_report();
+    uint64_t rc, rb, rp, rpk, rmade, rfreed;
+    vkb_ring_stats(&rc, &rb, &rp);
+    vkb_ring_counts(&rpk, &rmade, &rfreed);
+    VLOG("memory: upload rings %.0f MiB (peak %.0f) in %llu chunks over %llu slot x thread pairs; chunks made %llu, given back %llu",
+         rb / 1048576.0, rpk / 1048576.0, (unsigned long long)rc, (unsigned long long)rp, (unsigned long long)rmade,
+         (unsigned long long)rfreed);
     void plat_memory_map(void);   // runtime/platform.h
     static int map = -1;
     if (map < 0) map = getenv("TOTK_MEMMAP") != NULL;
@@ -172,10 +178,6 @@ static void memory_log(void) {
         uint64_t vb, vn;
         totk_vpool_host_stats(&vb, &vn);
         VLOG("memory: CPU_NO_ACCESS physical pools' own storage %.0f MiB in %llu", vb / 1048576.0, (unsigned long long)vn);
-        uint64_t rc, rb, rp;
-        vkb_ring_stats(&rc, &rb, &rp);
-        VLOG("memory: upload rings %.0f MiB in %llu chunks over %llu slot x thread pairs", rb / 1048576.0, (unsigned long long)rc,
-             (unsigned long long)rp);
         static const char *const tn[MT_N] = {"other", "images", "upload rings", "descriptors", "pool copies", "mirrors",
                                              "uniform copies", "write-back", "copy back"};
         char tl[384];
