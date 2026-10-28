@@ -133,7 +133,11 @@ void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
 // TOTK translation thread (see "translation thread" below)
 static uint64_t fence_now(int *token);
 static int fence_wait(uint64_t k, uint64_t timeout_ns);
-enum { XD_POOL, XD_READ_TEXELS, XD_WRITE_TEXELS, XD_PROGRAM, XD_FINISH, XD_SUSPEND, XD_GRAPHICS, XD_N };   // why the game thread waited
+enum { XD_POOL, XD_READ_TEXELS, XD_WRITE_TEXELS, XD_PROGRAM, XD_FINISH, XD_SUSPEND, XD_GRAPHICS, XD_POOL_REUSE, XD_READ_TURN, XD_N };   // why the game thread waited
+static void x_poolrel(void *mem, uint64_t size);
+static void x_pool_reuse(const void *mem, uint64_t size);
+static void x_texwrite(const tex_t *o, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img, size_t wb, uint32_t hb);
+static void x_read_texels(const tex_t *o, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img);
 static void x_drain(int why);
 static int async_replay(void);
 static int call_stats_on(void);
@@ -325,7 +329,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    if (o->mem && gpu_visible) { x_pool_reuse(o->mem, o->size); mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
     o->va = o->mem && gpu_visible ? va_assign((uint64_t)(uintptr_t)o->mem, o->size) : (uint64_t)(uintptr_t)o->mem;
     if (!o->mem) LOG("[error] MemoryPoolInitialize has no storage, flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
@@ -334,7 +338,12 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(XD_POOL); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    // TOTK translation thread: deleted in queue order (x_poolrel), after the submissions queued before - the game waited
+    // for the GPU work that used the pool before finalizing it, so those do not touch it; before 2026-10-28 the game thread
+    // waited here for the whole queue (~6 s in a 17-minute session).
+    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) {
+        if (async_replay()) x_poolrel(o->mem, o->size); else { nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    }
     va_release(o->va);
     totk_vpool_fini(o); o->magic = 0;
 }
@@ -545,7 +554,7 @@ static void read_texels(const tex_t *o, const view_t *v, const NVNcopyRegion *r,
     if (!row) row = wb;
     if (!img) img = row * hb;
     unsigned level = v && v->set_levels ? (unsigned)v->base_level : 0, layer0 = v && v->set_layers ? (unsigned)v->min_layer : 0;
-    x_drain(XD_READ_TEXELS); mtl_read_texels(o, level, layer0, r, dst, (size_t)row, (size_t)img);
+    x_read_texels(o, level, layer0, r, dst, (size_t)row, (size_t)img);
 }
 NVN(nvnTextureReadTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, void *dst) {
     read_texels(CTX(t), (const view_t *)v, r, dst, 0, 0);
@@ -561,7 +570,8 @@ static void write_texels(const tex_t *o, const view_t *v, const NVNcopyRegion *r
     if (row < (ptrdiff_t)wb || img < row * (ptrdiff_t)hb) die("WriteTexels: stride smaller than region");
     unsigned level = v && v->set_levels ? (unsigned)v->base_level : 0, layer0 = v && v->set_layers ? (unsigned)v->min_layer : 0;
     if (v && v->set_format && v->format != o->d.format) die("WriteTexels: format-reinterpreting view not supported");
-    x_drain(XD_WRITE_TEXELS); mtl_write_texels(o, level, layer0, r, src, (size_t)row, (size_t)img);
+    if (!async_replay()) { mtl_write_texels(o, level, layer0, r, src, (size_t)row, (size_t)img); return; }
+    if (mtl_write_texels_mem(o, level, layer0, r, src, (size_t)row, (size_t)img)) x_texwrite(o, level, layer0, r, src, (size_t)row, (size_t)img, wb, hb);
 }
 NVN(nvnTextureWriteTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, const void *src) {
     write_texels(CTX(t), (const view_t *)v, r, src, 0, 0);
@@ -2009,10 +2019,13 @@ _Atomic int dm_submit_busy;   // TOTK diagnostic: submissions being replayed (ru
 //    job of that image's last present, then for its present ticket as before. The replay frame number travels in the job.
 //  - Operations that destroy or read Metal state (pool / texture / program finalize, ReadTexels / WriteTexels, QueueFinish,
 //    suspend) wait until the queue is empty first (x_drain), so they never overtake a queued replay that still uses them.
+//    Since 2026-10-28 pool finalize and the image part of WriteTexels are jobs too (in order, no wait), and ReadTexels runs
+//    on this thread out of turn, between two jobs: the game waited for the GPU work it reads (its fence), so the queued
+//    jobs after it do not write that texture; the game thread waited ~19 s for the queue in a 17-minute session.
 // TOTK_ASYNC_REPLAY=0 runs everything on the calling thread as before. [Windows port] On by default since 2026-10-24: with
 // the Vulkan replay on the game's thread the Great Sky Island ran at ~95 ms a frame, with this thread at ~58 ms.
-enum { XJ_SUBMIT = 1, XJ_PRESENT, XJ_TEXREL, XJ_SHREL };
-typedef struct { int kind, n; uint64_t *h; void *ucap; win_t *win; int idx; double period; int crop[4]; uint64_t frame, sub; tex_t tex; } xjob;   // tex: copy of a finalized texture (XJ_TEXREL); ucap: uniforms captured at the submit call, or the shaders a program let go of (XJ_SHREL)
+enum { XJ_SUBMIT = 1, XJ_PRESENT, XJ_TEXREL, XJ_SHREL, XJ_POOLREL, XJ_TEXWRITE };
+typedef struct { int kind, n; uint64_t *h; void *ucap; win_t *win; int idx; double period; int crop[4]; uint64_t frame, sub; tex_t tex; } xjob;   // tex: copy of a finalized texture (XJ_TEXREL) or of the written one (XJ_TEXWRITE); ucap: uniforms captured at the submit call, the shaders a program let go of (XJ_SHREL), the pool's memory (XJ_POOLREL) or the texels (XJ_TEXWRITE, xtexw)
 #define XQ 64
 #define XF 4096
 static xjob g_xq[XQ];
@@ -2021,6 +2034,16 @@ static pthread_mutex_t g_xq_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_xq_cv = PTHREAD_COND_INITIALIZER;
 static win_t *g_xp_win; static uint64_t g_xp_job[4];   // job number of each swapchain image's last present (TOTK has one window)
 static _Atomic uint64_t g_x_drains, g_x_drain_ns;
+// Pools finalized, not deleted yet (XJ_POOLREL): a new pool over that memory waits for the queue first (the pool tables
+// are keyed by the memory). Texel writes queued (XJ_TEXWRITE): a texel read waits for the queue then. Under g_xq_mu.
+enum { XPOOLS = 64 };
+static struct { uintptr_t lo, hi; } g_xpool[XPOOLS];
+static int g_nxpool;
+static uint64_t g_xtexw;
+typedef struct { unsigned level, layer0; NVNcopyRegion r; uint8_t data[]; } xtexw;   // the region's texels, rows packed
+// A texel read out of turn (x_read_texels): state 1 asked, 2 done; one at a time (g_xread_mu).
+static struct { const tex_t *t; unsigned level, layer0; const NVNcopyRegion *r; uint8_t *dst; size_t row, img; int state; } g_xread;
+static pthread_mutex_t g_xread_mu = PTHREAD_MUTEX_INITIALIZER;
 static int async_replay(void) {
     static int v = -1;
     if (v < 0) { const char *e = getenv("TOTK_ASYNC_REPLAY"); v = !(e && atoi(e) <= 0); if (v) LOG("[nvn] translation thread: submissions and presents are replayed by a dedicated thread (TOTK_ASYNC_REPLAY=0 disables)"); }
@@ -2033,12 +2056,23 @@ static void *x_thread(void *unused) {
     { void plat_thread_boost(void); plat_thread_boost(); }   // [Windows port] the frame waits for this thread
     for (;;) {
         pthread_mutex_lock(&g_xq_mu);
-        while (g_xq_done == g_xq_in) pthread_cond_wait(&g_xq_cv, &g_xq_mu);
+        while (g_xq_done == g_xq_in && g_xread.state != 1) pthread_cond_wait(&g_xq_cv, &g_xq_mu);
+        if (g_xread.state == 1) {   // between two jobs: nothing is being recorded
+            pthread_mutex_unlock(&g_xq_mu);
+            mtl_read_texels(g_xread.t, g_xread.level, g_xread.layer0, g_xread.r, g_xread.dst, g_xread.row, g_xread.img);
+            pthread_mutex_lock(&g_xq_mu);
+            g_xread.state = 2;
+            pthread_cond_broadcast(&g_xq_cv);
+            pthread_mutex_unlock(&g_xq_mu);
+            continue;
+        }
         xjob j = g_xq[g_xq_done % XQ];
         pthread_mutex_unlock(&g_xq_mu);
         if (j.kind == XJ_SUBMIT) { submit_exec(j.n, j.h, j.ucap); free(j.h); }
         else if (j.kind == XJ_TEXREL) { void live_del_x(const tex_t *o); live_del_x(&j.tex); mtl_tex_release(&j.tex); }
         else if (j.kind == XJ_SHREL) { void vkb_shader_release(void *rel); vkb_shader_release(j.ucap); }
+        else if (j.kind == XJ_POOLREL) { nvn_dirty_remove_range(j.ucap); mtl_pool_del(j.ucap); }
+        else if (j.kind == XJ_TEXWRITE) { xtexw *w = j.ucap; mtl_write_texels_image(&j.tex, w->level, w->layer0, &w->r, w->data, 0, 0); free(w); }
         else {
             // Real-time like the game's render thread that used to replay (set at acquire): otherwise the game's ~50
             // worker threads preempt the replay (measured: replay 6.6 -> 13 ms, 10 fps). Half the period is declared.
@@ -2050,6 +2084,9 @@ static void *x_thread(void *unused) {
         }
         pthread_mutex_lock(&g_xq_mu);
         if (j.kind == XJ_SUBMIT) { g_xsub_fence[j.sub % XF] = mtl_last_fence(); g_xsub_done = j.sub; }
+        if (j.kind == XJ_POOLREL)
+            for (int i = 0; i < g_nxpool; i++) if (g_xpool[i].lo == (uintptr_t)j.ucap) { g_xpool[i] = g_xpool[--g_nxpool]; break; }
+        if (j.kind == XJ_TEXWRITE) g_xtexw--;
         g_xq_done++;
         pthread_cond_broadcast(&g_xq_cv);
         pthread_mutex_unlock(&g_xq_mu);
@@ -2098,6 +2135,60 @@ static void x_drain(int why) {   // everything queued so far has run (no-op when
     atomic_fetch_add(&g_x_why_n[why], 1); atomic_fetch_add(&g_x_why_ns[why], dt);
 }
 void nvn_x_drain(void) { x_drain(XD_GRAPHICS); }   // for the graphics layer (pool invalidate write-back)
+static void x_poolrel(void *mem, uint64_t size) {
+    pthread_mutex_lock(&g_xq_mu);
+    int full = g_nxpool == XPOOLS;
+    if (!full) { g_xpool[g_nxpool].lo = (uintptr_t)mem; g_xpool[g_nxpool].hi = (uintptr_t)mem + size; g_nxpool++; }
+    pthread_mutex_unlock(&g_xq_mu);
+    if (full) { x_drain(XD_POOL); nvn_dirty_remove_range(mem); mtl_pool_del(mem); return; }
+    xjob j = {.kind = XJ_POOLREL, .ucap = mem};
+    x_push(&j);
+}
+static void x_pool_reuse(const void *mem, uint64_t size) {   // a new pool: over the memory of one still to be deleted?
+    if (!async_replay()) return;
+    uintptr_t lo = (uintptr_t)mem, hi = lo + size;
+    int hit = 0;
+    pthread_mutex_lock(&g_xq_mu);
+    for (int i = 0; i < g_nxpool && !hit; i++) hit = g_xpool[i].lo < hi && lo < g_xpool[i].hi;
+    pthread_mutex_unlock(&g_xq_mu);
+    if (hit) x_drain(XD_POOL_REUSE);
+}
+static void x_texwrite(const tex_t *o, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img, size_t wb, uint32_t hb) {
+    uint32_t nz = r->depth > 0 ? (uint32_t)r->depth : 1;
+    xtexw *w = malloc(sizeof *w + wb * hb * nz);
+    if (!w) die("WriteTexels copy");
+    w->level = level; w->layer0 = layer0; w->r = *r;
+    for (uint32_t z = 0; z < nz; z++)
+        for (uint32_t y = 0; y < hb; y++) memcpy(w->data + ((size_t)z * hb + y) * wb, src + z * img + y * row, wb);
+    xjob j = {.kind = XJ_TEXWRITE, .ucap = w};
+    j.tex = *o;
+    pthread_mutex_lock(&g_xq_mu); g_xtexw++; pthread_mutex_unlock(&g_xq_mu);
+    x_push(&j);
+}
+static void x_read_texels(const tex_t *o, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
+    if (!async_replay()) { mtl_read_texels(o, level, layer0, r, dst, row, img); return; }
+    NVN_BLOCKING();
+    pthread_mutex_lock(&g_xread_mu);
+    pthread_mutex_lock(&g_xq_mu);
+    int idle = g_xq_done == g_xq_in, writes = g_xtexw != 0;
+    if (idle || writes) {   // idle: here, as before; texel writes queued: they come first
+        pthread_mutex_unlock(&g_xq_mu);
+        if (writes) x_drain(XD_READ_TEXELS);
+        mtl_read_texels(o, level, layer0, r, dst, row, img);
+        pthread_mutex_unlock(&g_xread_mu);
+        return;
+    }
+    uint64_t t0 = now_ns();
+    g_xread.t = o; g_xread.level = level; g_xread.layer0 = layer0; g_xread.r = r; g_xread.dst = dst; g_xread.row = row; g_xread.img = img;
+    g_xread.state = 1;
+    pthread_cond_broadcast(&g_xq_cv);
+    while (g_xread.state != 2) pthread_cond_wait(&g_xq_cv, &g_xq_mu);
+    g_xread.state = 0;
+    pthread_mutex_unlock(&g_xq_mu);
+    pthread_mutex_unlock(&g_xread_mu);
+    uint64_t dt = now_ns() - t0;
+    atomic_fetch_add(&g_x_why_n[XD_READ_TURN], 1); atomic_fetch_add(&g_x_why_ns[XD_READ_TURN], dt);
+}
 // Fence token for FenceSync: submits enqueued so far (async) or the Metal fence (synchronous).
 static uint64_t fence_now(int *token) {
     if (!async_replay()) { *token = 0; return mtl_last_fence(); }
@@ -2944,7 +3035,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     else if (g_frame % 300 == 0) { uint64_t d = atomic_exchange(&g_x_drains, 0), dn = atomic_exchange(&g_x_drain_ns, 0);
         pthread_mutex_lock(&g_xq_mu); uint64_t q = g_xq_in - g_xq_done; pthread_mutex_unlock(&g_xq_mu);
         LOG("[nvn] translation thread through frame %llu: %llu drain waits / %.1f ms over the last 300 frames, %llu queued items", (unsigned long long)g_frame, (unsigned long long)d, dn / 1e6, (unsigned long long)q);
-        static const char *const why[XD_N] = {"pool deleted", "read texels", "write texels", "program deleted", "queue finish", "suspend", "graphics layer"};
+        static const char *const why[XD_N] = {"pool deleted", "read texels", "write texels", "program deleted", "queue finish", "suspend", "graphics layer", "pool memory reused", "read texels out of turn"};
         char line[512]; size_t o = 0;
         for (int k = 0; k < XD_N; k++) { uint64_t n = atomic_exchange(&g_x_why_n[k], 0), ns = atomic_exchange(&g_x_why_ns[k], 0);
             if (n) o += (size_t)snprintf(line + o, sizeof line - o, " %s %llu / %.1f ms;", why[k], (unsigned long long)n, ns / 1e6); }

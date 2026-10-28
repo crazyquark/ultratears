@@ -195,6 +195,8 @@ void mtl_create_stats(uint64_t *lib, uint64_t *pso);   // 累计：提交线程�
 // CPU texture read: starting at level / layer0, written into dst with row / img byte strides
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img);
 void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img);   // TOTK: CPU texel write (WriteTexels)
+int mtl_write_texels_mem(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img);     // its game memory part (1: written)
+void mtl_write_texels_image(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img);  // its image part (translation thread)
 // 描述符池登记（贴图号 / 采样器号 → 对象快照）、程序释放
 // Descriptor pool registration (texture ID / sampler ID → object snapshot), program release
 void mtl_reg_tex(int id, const tex_t *t, const view_t *v);

@@ -1057,10 +1057,13 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 // upload sees the pages dirty); an image the GPU has written gets the region copied in directly as well. TOTK fills
 // its light falloff table this way: with the null backend's no-op the lights read garbage and the title screen was
 // several times too bright (2026-10-23).
-void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
-    if (!t || !r || !src || r->width <= 0 || r->height <= 0 || !t->mem) return;
+// Two parts (TOTK, 2026-10-28): the game memory at once on the game's thread (mtl_write_texels_mem), the image on the
+// translation thread after the submissions queued before the write (mtl_write_texels_image) - the game thread waited for
+// the whole queue before (~6 s in a 17-minute session).
+int mtl_write_texels_mem(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
+    if (!t || !r || !src || r->width <= 0 || r->height <= 0 || !t->mem) return 0;
     int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    if (!bpb) { static int said; if (said++ < 4) VLOG("[temporary] WriteTexels: texture %llu format %#x not written", (unsigned long long)t->serial, t->d.format); return; }
+    if (!bpb) { static int said; if (said++ < 4) VLOG("[temporary] WriteTexels: texture %llu format %#x not written", (unsigned long long)t->serial, t->d.format); return 0; }
     uint32_t bx = (uint32_t)(r->width + bw - 1) / bw, by = (uint32_t)(r->height + bh - 1) / bh, nz = r->depth > 0 ? (uint32_t)r->depth : 1;
     size_t wb = (size_t)bx * (size_t)bpb;
     if (!row) row = wb;
@@ -1070,7 +1073,7 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
     uint32_t ld = is3d ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
     uint32_t lbx = (lw + bw - 1) / bw, lby = (lh + bh - 1) / bh, pitch = lbx * (uint32_t)bpb;
     uint32_t sx = (uint32_t)r->xoffset / bw, sy = (uint32_t)r->yoffset / bh;
-    if (sx + bx > lbx || sy + by > lby) { VLOG("WriteTexels: region outside texture %llu", (unsigned long long)t->serial); return; }
+    if (sx + bx > lbx || sy + by > lby) { VLOG("WriteTexels: region outside texture %llu", (unsigned long long)t->serial); return 0; }
     uint8_t *lin = malloc((size_t)pitch * lby * ld);
     if (!lin) die("WriteTexels");
     uint8_t *storage = (uint8_t *)t->mem;
@@ -1086,6 +1089,16 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
         nvn_swizzle(&t->d, level, layer, lin, pitch, storage);
     }
     free(lin);
+    return 1;
+}
+// The image: told the game memory changed, or (GPU-written) the region copied in. src: as given to mtl_write_texels_mem.
+void mtl_write_texels_image(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
+    int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    uint32_t bx = (uint32_t)(r->width + bw - 1) / bw, by = (uint32_t)(r->height + bh - 1) / bh, nz = r->depth > 0 ? (uint32_t)r->depth : 1;
+    size_t wb = (size_t)bx * (size_t)bpb;
+    if (!row) row = wb;
+    if (!img) img = row * by;
+    int is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
     vkb_image *im = vkb_image_of(t);
     if (im && !im->gpu_written) im->cpu_written = 1;   // the pool may not be write-watched: say so directly
     if (im && im->gpu_written && !im->astc && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT && !(t->d.format >= 0x19 && t->d.format <= 0x24)) {
@@ -1108,6 +1121,9 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
     if (calls++ < 8) VLOG("WriteTexels: texture %llu format %#x level %u region %dx%dx%d at %d,%d,%d%s", (unsigned long long)t->serial,
                           t->d.format, level, r->width, r->height, r->depth, r->xoffset, r->yoffset, r->zoffset,
                           im && im->gpu_written ? " (GPU-written image updated too)" : "");
+}
+void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
+    if (mtl_write_texels_mem(t, level, layer0, r, src, row, img)) mtl_write_texels_image(t, level, layer0, r, src, row, img);
 }
 
 // ---------------- development: dump the frame's render targets ----------------

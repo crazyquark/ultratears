@@ -330,8 +330,9 @@ void mtl_pool_del(const void *mem) {
     vkb_rw_write_end(&g_pool_mu);
     if (!e.buf) return;
     if (vkc.has_checkpoints || vkc.has_buffer_marker) VLOG("memory pool %p %#llx..%#llx deleted (present %llu)", mem, (unsigned long long)e.lo, (unsigned long long)e.hi, (unsigned long long)vkb_frame());
-    // The frontend drains the queue before it deletes a pool (hle_nvn.c x_drain); the GPU may still be finishing.
-    mtl_finish();
+    // No wait for the GPU here (the translation thread deletes pools in queue order since 2026-10-28, hle_nvn.c
+    // x_poolrel): the game waited for the GPU work that used the pool; its copy in device memory is reused after the
+    // submission being recorded (vkb_shadow_free), the import goes after it too (below).
     // A submission of another game thread may be being recorded already and have copied from the pool (the copies of
     // recently used pools at its start, sync_gather): the import goes when that submission is done (destroy_later).
     destroy_later(VK_NULL_HANDLE, VK_NULL_HANDLE, e.mem, e.buf);
