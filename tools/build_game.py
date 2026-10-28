@@ -83,26 +83,45 @@ END
     return v
 
 
+def cpu_arch():
+    """x86-64-v3 where this CPU has AVX2, FMA and BMI2 (Intel Haswell / 2013, AMD Excavator / Zen and newer), else
+    x86-64-v2 (SSE4.2): the code is built on the player's PC, so for its CPU (issue #19: i7-3770, Xeon E3-1230 v2).
+    clang -march=native says which features the CPU has."""
+    r = subprocess.run([str(CLANG64 / 'clang.exe'), '-march=native', '-dM', '-E', '-x', 'c', os.devnull], capture_output=True,
+                       text=True, env=tool_env())
+    if r.returncode:
+        print('cannot ask clang about this CPU: building for x86-64-v3', flush=True)
+        return 'x86-64-v3'
+    have = {w for line in r.stdout.splitlines() for w in line.split()[1:2]}
+    return 'x86-64-v3' if {'__AVX2__', '__FMA__', '__BMI2__'} <= have else 'x86-64-v2'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--generated', default='data/generated')
     ap.add_argument('--target', default='probe_cpu')
     ap.add_argument('-j', type=int, default=0, help='parallel jobs (default: --cpus)')
     ap.add_argument('--cpus', type=int, default=8, help='logical CPUs the build may use (affinity); the rest stay free for the user')
+    ap.add_argument('--arch', default='auto', choices=['auto', 'x86-64-v3', 'x86-64-v2'],
+                    help='instruction set of the code (auto: x86-64-v3 where this CPU has AVX2, FMA and BMI2, else x86-64-v2)')
     a = ap.parse_args()
+    arch = cpu_arch() if a.arch == 'auto' else a.arch
+    cflags, game_cflags = CFLAGS.replace('x86-64-v3', arch), GAME_CFLAGS.replace('x86-64-v3', arch)
+    if arch != 'x86-64-v3':
+        print(f'code for {arch}: this CPU has no AVX2 / FMA / BMI2 (slower than x86-64-v3)', flush=True)
     a.j = a.j or a.cpus
     gen = ROOT / a.generated
     build = ROOT / 'build'
     build.mkdir(exist_ok=True)
     lines = [
         'builddir = build',   # ninja's own state (.ninja_log, .ninja_deps) in build/, not beside the sources
-        f'cflags = {CFLAGS} -Wall -Wno-unused-function -Ibuild',   # build/version.h (the game's code: not, so a new version rebuilds nothing of it)
-        f'gameflags = {GAME_CFLAGS}',
+        f'cflags = {cflags} -Wall -Wno-unused-function -Ibuild',   # build/version.h (the game's code: not, so a new version rebuilds nothing of it)
+        f'gameflags = {game_cflags}',
         'rule cc',
         '  command = clang -MD -MF $out.d $cflags -c $in -o $out',
         '  depfile = $out.d',
         '  deps = gcc',
-        f'gfxflags = {CFLAGS} -w {GFX_INCLUDES}',
+        f'gfxflags = {cflags} -w {GFX_INCLUDES}',
         'rule gfxcc',
         '  command = clang -MD -MF $out.d $gfxflags -c $in -o $out',
         '  depfile = $out.d',
@@ -148,7 +167,7 @@ def main():
             # instruction; with thousands of labels clang -O1/-O2 takes from minutes to hours per file (main_376:
             # 20+ min at -O1), -O0 15 s. Such functions run unoptimized until their tables resolve.
             if 'L_dispatch:' in text and text.count(chr(10) + 'L_') > 2000:
-                lines.append('  gameflags = ' + GAME_CFLAGS.replace('-O2', '-O0'))
+                lines.append('  gameflags = ' + game_cflags.replace('-O2', '-O0'))
             game_objs.append(obj)
     if not game_objs:
         sys.exit(f'no generated C in {gen}: run tools/gen_game.py first')

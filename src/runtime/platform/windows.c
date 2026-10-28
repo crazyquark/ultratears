@@ -244,13 +244,20 @@ static void log_to_file_without_console(void) {
     _putenv("TOTK_LOG_APPEND=1");
 }
 
-// The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
-// with an illegal instruction on an older CPU.
+// The code is built for the CPU of the PC that built it (tools/build_game.py --arch: x86-64-v3 with AVX2, FMA and BMI2,
+// or x86-64-v2 with SSE4.2 where those are missing, issue #19): say so instead of crashing with an illegal instruction
+// when the folder moved to an older CPU.
 static void require_cpu(void) {
     __builtin_cpu_init();
+#ifdef __AVX2__
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
-    MessageBoxA(NULL, "UltraTears needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
+    MessageBoxA(NULL, "This copy of UltraTears was built for a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / "
+                "Zen or newer). Run setup.bat again on this PC: it builds the game for this CPU.", "UltraTears", MB_ICONERROR | MB_OK);
+#else
+    if (__builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt") && __builtin_cpu_supports("ssse3")) return;
+    MessageBoxA(NULL, "UltraTears needs a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD Bulldozer or newer).",
                 "UltraTears", MB_ICONERROR | MB_OK);
+#endif
     ExitProcess(1);
 }
 
