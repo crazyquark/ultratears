@@ -941,7 +941,7 @@ static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
         im->upload_stamp = nvn_dirty_now();
         return 0;
     }
-    if (!im->upload_stamp) {   // first upload: does a GPU-written texture use the same memory? (aliasing, development log)
+    if (!im->upload_stamp && dm_stats()) {   // first upload: does a GPU-written texture use the same memory? (aliasing, development log)
         static int said;
         vkb_lock(&g_mu, LK_IMAGES);
         for (entry *e = g_all; e && said < 32; e = e->all_next) {
@@ -1664,7 +1664,7 @@ void vkb_tex_writeback_frame(void) {
     uint64_t dt = runtime_now_ns() - t0;
     st_ns += dt;
     if (dt > st_max) st_max = dt;
-    if (++frames % 300 == 0) {
+    if (++frames % 300 == 0 && dm_stats()) {
         VLOG("per frame: GPU-drawn images written back to game memory %.2f (%.3f MiB), %.2f skipped (texture gone or drawn again), "
              "%.1f queued; %.3f ms on the translation thread (%.3f laying out, longest frame %.2f ms)", st_n / 300.0, st_bytes / 300.0 / 1048576.0,
              st_skip / 300.0, st_queued / 300.0, st_ns / 300.0 / 1e6, st_lay / 300.0 / 1e6, st_max / 1e6);

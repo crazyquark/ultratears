@@ -1044,7 +1044,7 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
       if (b->empty) { b->empty = 0; g_cbk_empty--; }
       if (b->n == b->cap) { b->cap = b->cap ? b->cap * 2 : 8; b->v = realloc(b->v, b->cap * sizeof *b->v); if (!b->v) die("command copy table"); }
       b->v[b->n++] = (cmd_copy){lo, hi, copy, 0, (uint32_t)token}; g_ncopies++; }
-    { static uint64_t made; if (++made % 20000 == 0)
+    { static uint64_t made; if (++made % 20000 == 0 && dm_stats())
         LOG("[cmd] recording copies: %llu made, %zu live, %.1f MiB, submit %llu; released %llu at a re-added control memory, %llu whose mark there was gone (%llu unmapped); index %zu buckets (%zu empty) of %zu, compacted %llu times",
             (unsigned long long)made, g_ncopies, g_copy_bytes / 1048576.0, (unsigned long long)g_submits, (unsigned long long)g_copy_drop_readd, (unsigned long long)g_copy_drop_token, (unsigned long long)g_copy_mark_faults,
             g_cbk_used, g_cbk_empty, g_cbk_cap, (unsigned long long)g_cbk_compactions); }
@@ -2227,7 +2227,7 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
         uint64_t r0 = now_ns();
         for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)h[i], 0);
         g_def_ns += now_ns() - r0;
-        if (((queue_t *)q)->submits % 600 == 0) LOG("[nvn] deferred bindings through submit %llu: %llu handles read at submit, %llu differed from recording; mean handle-read time %.3f ms/submit", (unsigned long long)((queue_t *)q)->submits, (unsigned long long)g_def_n, (unsigned long long)g_def_changed, g_def_ns / 1e6 / (double)((queue_t *)q)->submits);
+        if (((queue_t *)q)->submits % 600 == 0 && dm_stats()) LOG("[nvn] deferred bindings through submit %llu: %llu handles read at submit, %llu differed from recording; mean handle-read time %.3f ms/submit", (unsigned long long)((queue_t *)q)->submits, (unsigned long long)g_def_n, (unsigned long long)g_def_changed, g_def_ns / 1e6 / (double)((queue_t *)q)->submits);
     }
     if (async_replay()) {
         xjob j = {.kind = XJ_SUBMIT, .n = n, .h = malloc(sizeof(uint64_t) * (n > 0 ? n : 1))};
@@ -2400,6 +2400,7 @@ static void game_work_tick(uint64_t frame) {
     if (ms >= 0 && ms < 10000 && n < 300) win[n++] = ms;   // loading frames leave the frame start unset (absolute tick)
     if (ms > 33.333 && ms < 10000) over33++;
     if (frame % 300) return;
+    if (!dm_stats()) { n = 0; over33 = 0; return; }
     if (n < 30) { LOG("[nvn] game frame work time (+0x118) through frame %llu: too few valid values (%d), raw %lld", (unsigned long long)frame, n, (long long)t); n = 0; return; }
     double v[300]; memcpy(v, win, sizeof(double) * n); qsort(v, n, sizeof *v, dcmp);
     const int32_t *c = (const int32_t *)(uintptr_t)(g_game_sys + 0x248);
@@ -2566,7 +2567,7 @@ static void dump_frame(void) {
     }
     if (g_tsv) fflush(g_tsv);
     if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions, %llu calls |%s", g_frame ? "frame" : "initialization", g_frame, nfn, total, line);
-    else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions, %llu calls", g_frame, nfn, total);
+    else if (g_frame % 300 == 0 && dm_stats()) LOG("[nvn] frame %llu: %u functions, %llu calls", g_frame, nfn, total);
     g_frame++; g_frame_pub = g_frame; cs_dump();
     { void runtime_watch_tick(uint64_t); runtime_watch_tick(g_frame); }   // TOTK diagnostic write watchpoint (TOTK_WATCH)
     { void runtime_input_script_tick(uint64_t); runtime_input_script_tick(g_frame); }   // TOTK_INPUT_SCRIPT (development)
@@ -3023,7 +3024,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
     prev_in = t0; prev_pass = ps; prev_draw = dr;
     dump_frame();
-    if (g_frame % TWIN == 0) tsummary(g_frame);
+    if (g_frame % TWIN == 0 && dm_stats()) tsummary(g_frame);
     if (call_stats_on() && g_frame % 300 == 0) {
         static uint64_t pd; uint64_t ps2, dr2; mtl_stats(&ps2, &dr2); uint64_t all = dr2 - pd; pd = dr2;
         LOG("[nvn] call lists over the last 300 frames: %.0f draws/frame, %.0f from called lists (%.0f%%), %.0f in lists identical to the previous frame (%.0f%%); %.0f calls/frame / %.0f KB, identical %.0f / %.0f KB",
@@ -3032,7 +3033,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         g_cs_calls = g_cs_draws = g_cs_same_calls = g_cs_same_draws = g_cs_bytes = g_cs_same_bytes = 0;
     }
     if (!async_replay()) mtl_set_frame(g_frame);
-    else if (g_frame % 300 == 0) { uint64_t d = atomic_exchange(&g_x_drains, 0), dn = atomic_exchange(&g_x_drain_ns, 0);
+    else if (g_frame % 300 == 0 && dm_stats()) { uint64_t d = atomic_exchange(&g_x_drains, 0), dn = atomic_exchange(&g_x_drain_ns, 0);
         pthread_mutex_lock(&g_xq_mu); uint64_t q = g_xq_in - g_xq_done; pthread_mutex_unlock(&g_xq_mu);
         LOG("[nvn] translation thread through frame %llu: %llu drain waits / %.1f ms over the last 300 frames, %llu queued items", (unsigned long long)g_frame, (unsigned long long)d, dn / 1e6, (unsigned long long)q);
         static const char *const why[XD_N] = {"pool deleted", "read texels", "write texels", "program deleted", "queue finish", "suspend", "graphics layer", "pool memory reused", "read texels out of turn"};

@@ -1954,7 +1954,7 @@ void vkb_dump_request(void) {
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     (void)period_s;
     uint64_t n = atomic_fetch_add(&g_ticket, 1) + 1;
-    if (n == 1 || n % 300 == 0) {
+    if (dm_stats() && (n == 1 || n % 300 == 0)) {
         uint64_t sl, sm;
         vkb_shader_stats(&sl, &sm);
         uint64_t dn, dsk;
@@ -2592,7 +2592,7 @@ void vkb_mt_submit(const uint64_t *h, int n) {   // after mtl_sub_begin and the 
         for (int i = 0; i < g_nch; i++) if (g_ch[i].ns > mx) { mx = g_ch[i].ns; md = g_ch[i].draws; }
         longest_ns += mx; longest_draws += md;
     }
-    if (subs >= said_at + 600) {   // the log line: where a submission's recording time goes
+    if (dm_stats() && subs >= said_at + 600) {   // the log line: where a submission's recording time goes
         said_at = subs;
         static uint64_t prev_rec;
         uint64_t rec = vkb_cnt_sum(g_mt_rec_ns);

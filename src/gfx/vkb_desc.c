@@ -213,7 +213,7 @@ VkDeviceSize vkb_db_set(VkCommandBuffer cb, int slot, uint64_t rec, const VkWrit
             memset(m, 0, sizeof *m);
         }
         if (!dmem_new(m, size)) die("descriptor memory");
-        VLOG("descriptor memory of slot %d, recording thread %d: %llu MiB", slot, wk, (unsigned long long)(size >> 20));
+        if (dm_stats()) VLOG("descriptor memory of slot %d, recording thread %d: %llu MiB", slot, wk, (unsigned long long)(size >> 20));
         g_gen++;
         at = 0;
     }

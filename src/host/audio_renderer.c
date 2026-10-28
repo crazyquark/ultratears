@@ -263,7 +263,7 @@ static void *render_thread(void *p) {
             audio_mixer_render(r, frame);
             for (int i = 0; i < r->param.voice_count; i++) advance_voice(r, &r->voices[i], frame);
             r->elapsed_frames++;
-            if (r->stop_released + r->empty_played + r->flushed != r->logged_released && r->elapsed_frames % 1000 == 0) {
+            if (r->stop_released + r->empty_played + r->flushed != r->logged_released && r->elapsed_frames % 1000 == 0 && audio_stats()) {
                 r->logged_released = r->stop_released + r->empty_played + r->flushed;
                 fprintf(stderr, "[totk-audio] wave buffers given back: %llu by stopped voices, %llu without samples, %llu flushed (since start)\n",
                         (unsigned long long)r->stop_released, (unsigned long long)r->empty_played, (unsigned long long)r->flushed);

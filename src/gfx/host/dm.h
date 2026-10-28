@@ -6,6 +6,13 @@
 #include <string.h>
 #include <pthread.h>
 #define LOG(...) do {fprintf(stderr,"[totk-gfx] " __VA_ARGS__);fputc('\n',stderr);}while(0)
+// TOTK_STATS=1 (or TOTK_MEMMAP): the periodic statistics lines (every 300 frames and the like) - off for players, whose
+// log keeps the errors, the long frames and the start-up lines.
+static inline int dm_stats(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_STATS"); v = (e && *e && *e != '0') || getenv("TOTK_MEMMAP") != NULL; }
+    return v;
+}
 void plat_fatal_notice(void);   // runtime/platform.h: the error in a message box (no console), why when out of memory
 #define die(...) do {LOG("FATAL: " __VA_ARGS__);fflush(stderr);plat_fatal_notice();exit(2);}while(0)
 typedef struct {const char *name;uint8_t *base;size_t size;} module_t;
