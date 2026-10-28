@@ -273,10 +273,19 @@ VkShaderEXT vkb_shader_variant(const vkb_shader *cs, uint32_t intmask, uint32_t 
     return obj;
 }
 
+// Depth compares with the reference clamped to [0, 1] (vkb_spv_clamp_dref, GitHub #34); TOTK_VK_DREF_CLAMP=0: as before
+// (A/B). The rewrites at load are part of what a compiled binary was made from (stamp_of).
+static int dref_clamp(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_VK_DREF_CLAMP"); v = !(e && *e == '0'); }
+    return v;
+}
 // Which translation of a shader: its .res.json's last write (seconds) and size, as the compiled binaries are keyed
-// (vkb_shbin_variant.stamp). Taken from _stat64 here and from FindFirstFile in ahead_thread: the same numbers.
+// (vkb_shbin_variant.stamp), and the rewrites load_module makes. Taken from _stat64 here and from FindFirstFile in
+// ahead_thread: the same numbers.
 static uint32_t stamp_of(uint64_t mtime_s, uint64_t size) {
     uint64_t h = (mtime_s * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    if (dref_clamp()) h ^= 0x5BD1E995ull << 32;   // binaries made before the clamp are not used (the halves fold below)
     return (uint32_t)(h ^ h >> 32) | 1;   // never 0
 }
 
@@ -355,6 +364,9 @@ static int load_module(vkb_shader *s, const char *key, int nvn_stage, uint32_t *
     free(j);
     // rewrite Binding decorations (OpDecorate %id Binding n: opcode 71, decoration 33)
     size_t nw = drop_cull_distance(spv, nspv / 4);
+    uint32_t *clamped = NULL;
+    size_t ncl = 0;
+    if (dref_clamp() && vkb_spv_clamp_dref(spv, nw, &clamped, &ncl)) { free(spv); spv = clamped; nw = ncl; }
     nspv = nw * 4;
     for (size_t i = 5; i < nw;) {
         uint32_t op = spv[i] & 0xffff, wc = spv[i] >> 16;

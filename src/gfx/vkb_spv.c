@@ -280,3 +280,61 @@ static uint32_t location_mask(const uint32_t *in, size_t nw, uint32_t storage) {
     free(loc_of);
     return mask;
 }
+
+// TOTK draws the sun's shadow map as D16; depth formats are D32F here (vkb_tex.c: the EQUAL-tested lighting tiles).
+// Vulkan clamps a compare's reference to [0, 1] only for UNORM depth, so past the far end of shadow cascade 0, where
+// the cascade-1 pixels look it up too, the reference is above 1 and the compare failed: a dark box on the ground ahead
+// of Link (GitHub #34, A-FadedAway: the cause and this fix). The clamp covers the textures that are D32F on the Switch
+// as well; it differs there only when the reference is outside [0, 1] and the stored depth is exactly 0 or 1.
+int vkb_spv_clamp_dref(const uint32_t *in, size_t nw, uint32_t **out, size_t *outw) {
+    enum { OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_MEMORY_MODEL = 14, OP_CONSTANT = 43, OP_FUNCTION = 54, FCLAMP = 43 };
+    static const char glsl[] = "GLSL.std.450";   // 13 bytes with the NUL: 4 words
+    if (nw < 5) return 0;
+    uint32_t bound = in[3], next = bound, f32 = 0, ext = 0, zero = 0, one = 0;
+    int n = 0;
+    for (size_t i = 5; i < nw;) {
+        uint32_t op = in[i] & 0xffff, wc = in[i] >> 16;
+        if (!wc || i + wc > nw) return 0;
+        const uint32_t *a = in + i + 1;
+        if (op == OP_EXT_INST_IMPORT && wc >= 6 && !memcmp(a + 1, glsl, sizeof glsl)) ext = a[0];
+        else if (op == OP_TYPE_FLOAT && a[1] == 32) f32 = a[0];
+        else if (op == OP_CONSTANT && wc == 4 && f32 && a[0] == f32) {
+            if (a[2] == 0) zero = a[1];
+            else if (a[2] == 0x3f800000u) one = a[1];
+        } else if ((op == 89 || op == 90 || op == 97 || op == 307 || op == 308 || op == 315) && wc >= 6) n++;   // Dref at word 5
+        i += wc;
+    }
+    if (!n || !f32) return 0;
+    int add_ext = !ext, add_zero = !zero, add_one = !one;
+    if (add_ext) ext = next++;
+    if (add_zero) zero = next++;
+    if (add_one) one = next++;
+    words o = {0};
+    for (int i = 0; i < 5; i++) put(&o, in[i]);
+    for (size_t i = 5; i < nw;) {
+        uint32_t op = in[i] & 0xffff, wc = in[i] >> 16;
+        if (op == OP_MEMORY_MODEL && add_ext) {   // after the other imports, before the memory model
+            uint32_t name[4] = {0};
+            memcpy(name, glsl, sizeof glsl);
+            put(&o, 6u << 16 | OP_EXT_INST_IMPORT); put(&o, ext);
+            for (int k = 0; k < 4; k++) put(&o, name[k]);
+            add_ext = 0;
+        }
+        if (op == OP_FUNCTION && (add_zero || add_one)) {   // the constants before the first function
+            if (add_zero) { uint32_t c[3] = {f32, zero, 0}; put_ins(&o, OP_CONSTANT, 3, c); add_zero = 0; }
+            if (add_one) { uint32_t c[3] = {f32, one, 0x3f800000u}; put_ins(&o, OP_CONSTANT, 3, c); add_one = 0; }
+        }
+        if ((op == 89 || op == 90 || op == 97 || op == 307 || op == 308 || op == 315) && wc >= 6) {
+            uint32_t c = next++, x[7] = {f32, c, ext, FCLAMP, in[i + 5], zero, one};
+            put_ins(&o, OP_EXT_INST, 7, x);
+            for (uint32_t k = 0; k < wc; k++) put(&o, k == 5 ? c : in[i + k]);
+        } else
+            for (uint32_t k = 0; k < wc; k++) put(&o, in[i + k]);
+        i += wc;
+    }
+    if (add_ext || add_zero || add_one) { free(o.w); return 0; }   // no memory model / function to place them by
+    o.w[3] = next;
+    *out = o.w;
+    *outw = o.n;
+    return n;
+}

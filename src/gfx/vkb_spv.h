@@ -19,3 +19,7 @@ void vkb_spv_input_int_masks(const uint32_t *in, size_t nwords, uint32_t *umask,
 // above. Returns the number of outputs added (0: a shape not handled - the caller keeps the original).
 int vkb_spv_add_outputs(const uint32_t *in, size_t nwords, uint32_t locmask, uint32_t umask, uint32_t imask, uint32_t **out,
                         size_t *outw);
+// Depth compares with the reference clamped to [0, 1] (FClamp before every OpImage*Dref*): the Switch keeps a D16
+// shadow map, whose compares clamp the reference; ours is D32F, whose compares do not (GitHub #34). *out as above.
+// Returns the number of compares rewritten (0: none, or a shape not handled - the caller keeps the original).
+int vkb_spv_clamp_dref(const uint32_t *in, size_t nwords, uint32_t **out, size_t *outw);
