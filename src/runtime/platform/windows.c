@@ -219,9 +219,11 @@ static char g_log_path[MAX_PATH];
 
 // TOTK_LOG_FILE=1 (or a path): the log goes to the file even with a console - under Proton the game gets a console
 // window that closes with it, and PROTON_LOG has only Wine's own lines.
+// Under Wine (Proton) always: the console there is not one the player can keep.
 static void log_to_file_without_console(void) {
     const char *force = getenv("TOTK_LOG_FILE");
     if (force && !*force) force = NULL;
+    if (!force && GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) force = "1";
     if (!force && GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
     char exe[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
