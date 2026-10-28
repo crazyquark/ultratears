@@ -106,12 +106,17 @@ static int no_cache(void) {   // TOTK_VK_NO_RECORD_CACHE=1 (development): every 
     if (v < 0) { const char *e = getenv("TOTK_VK_NO_RECORD_CACHE"); v = e && *e && *e != '0'; }
     return v;
 }
+// Trims and vkb_ring_reclaim (any thread) change a slot's chunk list; recording into a slot (vkb_ring_alloc) does not
+// take it: reclaim leaves the recording slot alone.
+static pthread_mutex_t g_ring_mu = PTHREAD_MUTEX_INITIALIZER;
 void vkb_slot_reset(int slot) {   // the slot's previous submission has completed; a new one starts recording
     vkb_rec_begin();
     if (vkb_db_on()) vkb_db_slot_reset(slot);
+    pthread_mutex_lock(&g_ring_mu);
+    for (int w = 0; w < VKB_MAXREC; w++) ring_trim(&g_res[slot][w]);
+    pthread_mutex_unlock(&g_ring_mu);
     for (int w = 0; w < VKB_MAXREC; w++) {
         slot_res *r = &g_res[slot][w];
-        ring_trim(r);
         for (int i = 0; i < r->n; i++) r->c[i].used = 0;
         r->cur = 0;
         for (int i = 0; i < r->npool; i++) vk.vkResetDescriptorPool(vkc.device, r->pool[i], 0);
@@ -120,6 +125,22 @@ void vkb_slot_reset(int slot) {   // the slot's previous submission has complete
     g_mpool[slot].used = 0;
 }
 
+// Out of memory (count_alloc, backend_vk.c): the upload memory of the slots whose submission the GPU has finished and
+// that do not record now goes back, all of it - a slot grows it again from RING_MIN when it next records.
+uint64_t vkb_ring_reclaim(void) {
+    uint64_t freed = 0;
+    pthread_mutex_lock(&g_ring_mu);
+    for (int s = 0; s < VKB_SLOTS; s++) {
+        if (!vkb_slot_idle(s)) continue;
+        for (int w = 0; w < VKB_MAXREC; w++) {
+            slot_res *r = &g_res[s][w];
+            while (r->n) { freed += r->c[r->n - 1].size; chunk_free(&r->c[--r->n]); }
+            r->cur = r->peak = r->fpeak = r->resets = r->fresets = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_ring_mu);
+    return freed;
+}
 void vkb_ring_counts(uint64_t *peak, uint64_t *made, uint64_t *freed) {
     *peak = atomic_load(&g_ring_peak);
     *made = atomic_load(&g_ring_made);

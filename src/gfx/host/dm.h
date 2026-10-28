@@ -6,7 +6,8 @@
 #include <string.h>
 #include <pthread.h>
 #define LOG(...) do {fprintf(stderr,"[totk-gfx] " __VA_ARGS__);fputc('\n',stderr);}while(0)
-#define die(...) do {LOG(__VA_ARGS__);exit(2);}while(0)
+void plat_fatal_notice(void);   // runtime/platform.h: the error in a message box (no console), why when out of memory
+#define die(...) do {LOG("FATAL: " __VA_ARGS__);fflush(stderr);plat_fatal_notice();exit(2);}while(0)
 typedef struct {const char *name;uint8_t *base;size_t size;} module_t;
 module_t *module_of(const void *p);
 uint64_t now_ns(void);uint64_t guest_ns(void);

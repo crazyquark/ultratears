@@ -108,13 +108,39 @@ static struct { uint64_t mem, size; int kind, tag; } *g_memtab;   // open addres
 __thread int vkb_mtag;
 static _Atomic uint64_t g_tag_bytes[MT_N];
 static pthread_mutex_t g_memtab_mu = PTHREAD_MUTEX_INITIALIZER;
+static __thread int t_retire;   // the retire thread: it completes the submissions, so it never waits for them
+static _Atomic uint64_t g_oom_events, g_oom_recovered;
+// Out of memory (the commit limit, the GPU heap's budget - L7, #31): give back the upload memory of idle slots, let
+// the GPU finish what is in flight (the frees deferred to it: images, shaders, buffers) and try again, up to ~2 s.
+// Pool copies have their own way out (they stay in game memory): one try after the reclaim, no wait.
+static VkResult alloc_retry(VkDevice d, const VkMemoryAllocateInfo *ai, const VkAllocationCallbacks *a, VkDeviceMemory *m,
+                            int tag, VkResult r) {
+    uint64_t n = atomic_fetch_add(&g_oom_events, 1) + 1, freed = 0, t0 = runtime_now_ns();
+    int tries = tag == MT_POOL_COPY ? 1 : 40;
+    for (int t = 0; t < tries && (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY); t++) {
+        freed += vkb_ring_reclaim();
+        if (tries > 1) {
+            if (!t_retire) mtl_wait(mtl_last_fence(), 50000000);
+            struct timespec ts = {0, 25000000};   // the page file may grow meanwhile
+            nanosleep(&ts, NULL);
+        }
+        r = g_real_alloc(d, ai, a, m);
+    }
+    if (r == VK_SUCCESS) atomic_fetch_add(&g_oom_recovered, 1);
+    if (n <= 20 || r != VK_SUCCESS)
+        VLOG("out of memory for %llu MiB (use %d): %s after %.0f ms, %.0f MiB of upload memory given back (%llu so far, %llu recovered)",
+             (unsigned long long)(ai->allocationSize >> 20), tag, r == VK_SUCCESS ? "allocated" : "still failing",
+             (runtime_now_ns() - t0) / 1e6, freed / 1048576.0, (unsigned long long)n, (unsigned long long)atomic_load(&g_oom_recovered));
+    return r;
+}
 static VkResult VKAPI_CALL count_alloc(VkDevice d, const VkMemoryAllocateInfo *ai, const VkAllocationCallbacks *a, VkDeviceMemory *m) {
     VkResult r = g_real_alloc(d, ai, a, m);
     int tag = vkb_mtag;
     vkb_mtag = MT_OTHER;
-    if (r != VK_SUCCESS) return r;
     int kind = MK_HOST;
     for (const VkBaseInStructure *p = ai->pNext; p; p = p->pNext) if (p->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT) kind = MK_IMPORT;
+    if (r != VK_SUCCESS && kind != MK_IMPORT) r = alloc_retry(d, ai, a, m, tag, r);
+    if (r != VK_SUCCESS) return r;
     if (kind == MK_IMPORT) tag = -1;   // game memory, not ours
     else atomic_fetch_add(&g_tag_bytes[tag], ai->allocationSize);
     if (kind != MK_IMPORT && ai->memoryTypeIndex < vkc.memory.memoryTypeCount &&
@@ -1090,6 +1116,7 @@ static void gpu_span(int slot, uint64_t fence);
 static void *retire_thread(void *unused) {
     (void)unused;
     pthread_setname_np("totk-vk-retire");
+    t_retire = 1;
     for (;;) {
         pthread_mutex_lock(&g_mu);
         while (!g_jobs) pthread_cond_wait(&g_cv, &g_mu);
@@ -1386,6 +1413,7 @@ static __thread VkExtent2D g_pass_extent;
 
 VkCommandBuffer vkb_cmd(void) { return t_cb ? t_cb : g_cur >= 0 ? g_slots[g_cur].cb : VK_NULL_HANDLE; }
 int vkb_slot(void) { return g_cur; }
+int vkb_slot_idle(int s) { return s != g_cur && s < g_nslots && g_slots[s].fence <= mtl_done(); }   // (vkb_ring_reclaim)
 int vkb_in_pass(void) { return g_in_pass; }
 const p_set_rt *vkb_rt(void) { return &g_rt; }
 uint64_t vkb_frame(void) { return atomic_load(&g_ticket); }

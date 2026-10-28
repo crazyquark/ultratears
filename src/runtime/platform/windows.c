@@ -243,7 +243,26 @@ static void require_cpu(void) {
 }
 
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
+// Most fatal errors after a failed allocation name only what was being allocated: say why when memory ran out (the
+// system's commit limit nearly reached, or this process's own limit with TOTK_SIM_*).
+static bool out_of_memory(void) {
+    MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+    mem_counters pc = {.cb = sizeof pc};
+    K32GetProcessMemoryInfo(GetCurrentProcess(), &pc, sizeof pc);
+    bool low = GlobalMemoryStatusEx(&ms) && ms.ullAvailPageFile < (512ull << 20);
+    if (!low && QueryInformationJobObject(NULL, JobObjectExtendedLimitInformation, &li, sizeof li, NULL) &&
+        (li.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_PROCESS_MEMORY))
+        low = li.PeakProcessMemoryUsed + (256ull << 20) > li.ProcessMemoryLimit;
+    if (low)
+        fprintf(stderr, "[plat] out of memory: %llu MiB of commit left in the system; process %llu MiB (its limit %llu, used at most %llu)\n",
+                (unsigned long long)(ms.ullAvailPageFile >> 20), (unsigned long long)(pc.PrivateUsage >> 20),
+                (unsigned long long)(li.ProcessMemoryLimit >> 20), (unsigned long long)(li.PeakProcessMemoryUsed >> 20));
+    return low;
+}
+
 void plat_fatal_notice(void) {
+    bool low = out_of_memory();
     if (!g_log_path[0]) return;
     fflush(stderr);
     char text[1024] = "UltraTears stopped because of an error.";
@@ -271,6 +290,10 @@ void plat_fatal_notice(void) {
         }
     }
     size_t l = strlen(text);
+    if (low)
+        l += (size_t)snprintf(text + l, sizeof text - l, "\n\nThe PC ran out of memory (RAM and page file). Close other programs, "
+                              "or let Windows manage the page file size (System > About > Advanced system settings > "
+                              "Performance > Advanced > Virtual memory).");
     snprintf(text + l, sizeof text - l, "\n\nDetails: %s", g_log_path);
     MessageBoxA(NULL, text, "UltraTears", MB_ICONERROR | MB_OK);
 }

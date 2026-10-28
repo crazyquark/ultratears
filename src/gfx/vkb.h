@@ -40,6 +40,8 @@ int vkb_in_pass(void);
 void *vkb_ring_alloc(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);
 void vkb_ring_stats(uint64_t *chunks, uint64_t *bytes, uint64_t *pairs);   // upload memory now: chunks, bytes, slot x thread pairs
 void vkb_ring_counts(uint64_t *peak, uint64_t *made, uint64_t *freed);   // its peak bytes; chunks made and given back so far
+uint64_t vkb_ring_reclaim(void);   // out of memory: idle slots' upload memory back (bytes freed)
+int vkb_slot_idle(int slot);   // the GPU has finished the slot's submission and it does not record now (backend_vk.c)
 // What the next vkAllocateMemory of this thread is for (the memory log counts by it; reset by the allocation).
 enum { MT_OTHER, MT_IMAGE, MT_RING, MT_DESC, MT_POOL_COPY, MT_MIRROR, MT_UCAP, MT_WRITEBACK, MT_COPY_BACK, MT_N };
 extern __thread int vkb_mtag;
