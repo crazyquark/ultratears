@@ -1004,7 +1004,17 @@ static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
         for (uint32_t layer = 0; layer < im->layers; layer++) {
             VkBuffer buf;
             VkDeviceSize off;
-            uint8_t *rows = vkb_ring_alloc(bytes, 16, &buf, &off);
+            // D16 is converted on the CPU: its rows in ordinary memory (read back from upload memory they cost 30-100 ms
+            // a depth texture, 2026-10-29); everything else goes to the GPU as laid out.
+            static __thread uint8_t *d16;
+            static __thread size_t d16_cap;
+            int convert = depth_up && bpb == 2;
+            if (convert && bytes > d16_cap) {
+                free(d16);
+                d16_cap = (size_t)bytes;
+                if (!(d16 = malloc(d16_cap))) die("D16 texels");
+            }
+            uint8_t *rows = convert ? d16 : vkb_ring_alloc(bytes, 16, &buf, &off);
             if (nvn_deswizzle(d, level, layer, src, rows, pitch)) continue;
             VkBufferImageCopy r = {.bufferOffset = off, .bufferRowLength = bx * (uint32_t)bw, .bufferImageHeight = by * (uint32_t)bh,
                                    .imageSubresource = {depth_up ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
