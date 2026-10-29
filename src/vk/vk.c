@@ -237,16 +237,24 @@ static int create_device(void) {
     // the shaders' interlock is the pixel one (vkb_spv_drop_interlock removes it where this is missing)
     vkc.has_interlock = vkc.has_interlock && ffsi.fragmentShaderPixelInterlock;
     if (!vkc.has_interlock) LOG("no fragment shader pixel interlock: shaders that use it run without it");
-    vkc.has_feedback_loop = has_fl && has_fld && ffl.attachmentFeedbackLoopLayout && ffld.attachmentFeedbackLoopDynamicState;
-    // TOTK_VK_NO_FEEDBACK=1 (development): as on a GPU without them (AMD on Windows); what is done instead -
-    // TOTK_VK_FB_FALLBACK (vkb_draw.c)
-    if (getenv("TOTK_VK_NO_FEEDBACK") && *getenv("TOTK_VK_NO_FEEDBACK") != '0') {
-        vkc.has_feedback_loop = 0;
-        has_fl = has_fld = 0;
-    }
-    if (!vkc.has_feedback_loop) LOG("no attachment feedback loops: textures that are attachments of their pass read empty");
+    // Without the dynamic state (AMD's Windows driver) the shader objects cannot declare the loop: the layout alone is
+    // used, which the Vulkan spec leaves undefined there but AMD's driver samples right (PR #36 by Moran45, Radeon 780M).
+    vkc.has_feedback_loop = has_fl && ffl.attachmentFeedbackLoopLayout;
+    vkc.has_feedback_dynamic = vkc.has_feedback_loop && has_fld && ffld.attachmentFeedbackLoopDynamicState;
     vkc.has_local_read = has_lr && flr.dynamicRenderingLocalRead;
-    if (vkc.has_feedback_loop && !vkc.has_local_read) LOG("no barriers inside a pass: a draw sampling its own target may miss earlier draws' writes");
+    // TOTK_VK_NO_FEEDBACK (development): =1 as AMD's Windows driver (the layout without the dynamic state, no barriers
+    // inside a pass); =2 without feedback loops at all (what is done then: TOTK_VK_FB_FALLBACK, vkb_draw.c)
+    const char *nf = getenv("TOTK_VK_NO_FEEDBACK");
+    if (nf && *nf && *nf != '0') {
+        vkc.has_feedback_dynamic = vkc.has_local_read = 0;
+        if (*nf == '2') vkc.has_feedback_loop = 0;
+    }
+    ffl.attachmentFeedbackLoopLayout = (VkBool32)vkc.has_feedback_loop;   // the features enabled are the ones used
+    ffld.attachmentFeedbackLoopDynamicState = (VkBool32)vkc.has_feedback_dynamic;
+    flr.dynamicRenderingLocalRead = (VkBool32)vkc.has_local_read;
+    if (!vkc.has_feedback_loop) LOG("no attachment feedback loops: a target sampled by its own draw is attached in GENERAL (TOTK_VK_FB_FALLBACK)");
+    else if (!vkc.has_feedback_dynamic) LOG("attachment feedback loops without the dynamic state: the layout alone");
+    if (!vkc.has_local_read) LOG("no barriers inside a pass: a pass that drew ends before a draw sampling its target");
     // TOTK_VK_ROBUST=1 (development): bounds-checked buffer access, to tell a shader's out-of-range access from other
     // causes of a lost device
     if (!getenv("TOTK_VK_ROBUST")) f2.features.robustBufferAccess = VK_FALSE;

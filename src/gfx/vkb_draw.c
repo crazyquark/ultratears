@@ -500,11 +500,12 @@ static vkb_image *handle_image(uint64_t h, const view_t **view) {
 // without it they would leave the pass, and the draw saw an empty texture instead (the audit's top substitution).
 static __thread vkb_image *g_fb_rt[9];   // this draw's targets: colour 0-7, depth 8
 static __thread uint32_t g_fb;           // the targets it samples (vkb.h VKB_FB_DEPTH)
-// Without the extension (AMD's Windows drivers) a draw that samples its own target either
+// AMD's Windows driver has the layout without its dynamic state: the layout alone (vk.c). Without barriers inside a pass
+// (no VK_KHR_dynamic_rendering_local_read) the pass ends before such a draw once anything was drawn in it, and the next
+// pass's barrier makes those writes visible. Without the layout extension at all a draw that samples its own target either
 //  - "general" (default): the target is attached in VK_IMAGE_LAYOUT_GENERAL and sampled in place, as before the
-//    extension existed; the pass ends before such a draw once anything was drawn in it, and the next pass's barrier
-//    makes those writes visible. Undefined by the Vulkan spec, the way of layers and drivers before 2022. On the
-//    RTX 3060 as without the extension: the frame of the copies at the cost of the passes only;
+//    extension existed. Undefined by the Vulkan spec, the way of layers and drivers before 2022. On the RTX 3060 as
+//    without the extension: the frame of the copies at the cost of the passes only;
 //  - "copy" (TOTK_VK_FB_FALLBACK=copy): reads a copy taken before the draw (vkb_tex_feedback_copy) - defined, but ~200
 //    copies a frame doubled the GPU time (12 -> 26 ms, p95 frame 35 -> 64 ms on the 3060);
 //  - "none" (=none): reads an empty texture, as before 2026-10-29 (the black screen of AMD).
@@ -1872,9 +1873,9 @@ void vkb_draw(const uint8_t *a, int indexed) {
         }
     }
     feedback_scan(vs, fs);
-    // [temporary] a pass per change of sampled targets; without the extension also once the pass has drawn (its writes
-    // become visible to this draw's reads only through the next pass's barrier)
-    if (vkb_in_pass() && (vkb_pass_fb() != g_fb || g_fbcopy || (g_fb && !vkc.has_feedback_loop && g_drawn_pass == vkb_pass_serial())))
+    // [temporary] a pass per change of sampled targets; without barriers inside a pass also once the pass has drawn (its
+    // writes become visible to this draw's reads only through the next pass's barrier)
+    if (vkb_in_pass() && (vkb_pass_fb() != g_fb || g_fbcopy || (g_fb && !vkc.has_local_read && g_drawn_pass == vkb_pass_serial())))
         vkb_pass_end_r(PE_FEEDBACK);
     if (g_fbcopy) fb_copies();
     if ((vkb_in_pass() && (images_need_work(vs, 0) || (fs && images_need_work(fs, 1))))) vkb_pass_end_r(PE_IMAGES);
@@ -1908,7 +1909,7 @@ void vkb_draw(const uint8_t *a, int indexed) {
     VkShaderEXT objs[5] = {vobj, fs ? fs->obj : VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     if (dyn(D_SHADERS, objs, sizeof objs)) vk.vkCmdBindShadersEXT(cb, 5, stages, objs);
     set_dynamic_state(cb, vkb_rt_count(), vkb_rt_extent(), topo);
-    if (vkc.has_feedback_loop) {   // required state with shader objects once the feature is enabled
+    if (vkc.has_feedback_dynamic) {   // required state with shader objects once the feature is enabled
         VkImageAspectFlags loop = (g_fb & 0xFF ? VK_IMAGE_ASPECT_COLOR_BIT : 0) | (g_fb & VKB_FB_DEPTH ? g_fb_rt[8]->aspect : 0);
         DYN(D_FBLOOP, VkImageAspectFlags, loop, vk.vkCmdSetAttachmentFeedbackLoopEnableEXT(cb, v_));
     }
