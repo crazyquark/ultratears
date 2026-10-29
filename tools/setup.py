@@ -212,10 +212,19 @@ def step_check(dump, state):
     toolchain.env()
     if not os.environ.get('ULTRS_SKIP_GPU_CHECK'):   # before an hour of building for a card the game cannot use
         import gpu_check
-        ok, text = gpu_check.check()
-        if not ok:
-            raise Fail(text)
-        say(f'  graphics: {text}')
+        verdict, text = gpu_check.check()
+        if verdict == 'ok':
+            say(f'  graphics: {text}')
+        else:   # the player decides: an unsupported card may still be worth a try (ULTRS_SKIP_GPU_CHECK=1: no question)
+            say(f'  graphics: {text}')
+            answer = ''
+            if sys.stdin and sys.stdin.isatty():
+                try:
+                    answer = input('  Build anyway? [y/N] ').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    say('')
+            if answer not in ('y', 'yes', 'д', 'да'):
+                raise Fail('stopped at the graphics card check (ULTRS_SKIP_GPU_CHECK=1 builds without asking)')
     if toolchain.XLATE is None:
         raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
     if packed(state) and all(ok_module(DATA / 'exefs' / n, h) for n, h in EXEFS.items()):

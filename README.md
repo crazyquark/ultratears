@@ -53,7 +53,7 @@ the same game build.
   somewhat slower.
 - A graphics card with a current Vulkan 1.3 driver and `VK_EXT_shader_object`: NVIDIA GTX 900 or newer, AMD RX 5000 or
   newer, Intel Arc / Iris Xe. **Not supported on Windows:** AMD RX 400/500 (Polaris) and Vega, Intel HD 500/600 — their
-  drivers have no `VK_EXT_shader_object`. The build checks the card first and stops with a message if none will do.
+  drivers have no `VK_EXT_shader_object`. The build checks the card first and asks whether to go on if none will do.
 - At least **16 GB of RAM** and a graphics card with at least **4 GB of video memory**. A PC with 8 GB of RAM, or a
   GPU that shares the system memory (integrated graphics), is not supported for now.
 - At least **40 GB free** on the drive of the game folder (an SSD is recommended): the build takes about 32 GB, and the

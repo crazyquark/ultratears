@@ -5,6 +5,8 @@ VK_KHR_swapchain. A Radeon RX 570 (Polaris, Windows) builds for 40 minutes and t
 with VK_EXT_shader_object is required" (2026-10-29): AMD's Windows driver for Polaris and Vega has no shader objects,
 nor has Intel's for HD 6xx (#17). Read through the Vulkan loader (vulkan-1.dll) with ctypes: nothing to install.
 
+Where no card has shader objects but the Khronos shader object layer (Vulkan SDK) is installed, the cards are looked at
+again through it: the game can run that way (a tester's RX 570), slower and not supported.
 usage: python tools/gpu_check.py   (prints each graphics card and what it lacks; exit code 1 when none will do)
 """
 import ctypes
@@ -32,15 +34,20 @@ class ExtensionProperties(ctypes.Structure):
     _fields_ = [('extensionName', ctypes.c_char * 256), ('specVersion', ctypes.c_uint32)]
 
 
-def gpus():
-    """[(name, type, 'major.minor.patch', missing requirements)] of every graphics card the Vulkan loader reports;
-    None when there is no Vulkan at all."""
+LAYER = b'VK_LAYER_KHRONOS_shader_object'
+
+
+def gpus(layer=None):
+    """[(name, type, 'major.minor.patch', missing requirements)] of every graphics card the Vulkan loader reports, seen
+    through layer when given; None when there is no Vulkan at all (or the layer is not installed)."""
     try:
         vk = ctypes.WinDLL('vulkan-1.dll')
     except OSError:
         return None
     app = AppInfo(0, None, b'UltraTears setup', 0, None, 0, API_1_3)   # VK_STRUCTURE_TYPE_APPLICATION_INFO
-    ci = InstanceInfo(1, None, 0, ctypes.pointer(app), 0, None, 0, None)   # VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+    names = (ctypes.c_char_p * 1)(layer)
+    ci = InstanceInfo(1, None, 0, ctypes.pointer(app), 1 if layer else 0,   # VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+                      ctypes.cast(names, ctypes.c_void_p) if layer else None, 0, None)
     inst = ctypes.c_void_p()
     if vk.vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst)) != 0:
         return None
@@ -69,24 +76,28 @@ def gpus():
 
 
 def check():
-    """(ok, text): whether a card will do, and what to tell the player."""
+    """(verdict, text): 'ok' a card will do; 'layer' only through the shader object layer; 'no' none; and what to tell
+    the player."""
     found = gpus()
     if found is None:
-        return False, ('no Vulkan driver was found (vulkan-1.dll): install the current driver for your graphics card '
-                       '(NVIDIA, AMD or Intel)')
+        return 'no', ('no Vulkan driver was found (vulkan-1.dll): install the current driver for your graphics card '
+                      '(NVIDIA, AMD or Intel)')
     lines = [f'{name} ({kind}, Vulkan {api})' + (': lacks ' + ', '.join(missing) if missing else ': supported')
              for name, kind, api, missing in found if kind != 'CPU']
-    ok = any(not missing for _, kind, _, missing in found if kind != 'CPU')
-    if ok:
-        return True, '; '.join(l for l in lines if l.endswith('supported'))
-    return False, ('no graphics card here can run the game: ' + '; '.join(lines or ['none reported']) +
-                   '. It needs Vulkan 1.3 with VK_EXT_shader_object: a current driver for NVIDIA GTX 900 or newer, AMD '
-                   'RX 5000 or newer, or Intel Arc / Iris Xe. AMD RX 400/500 and Vega and Intel HD 600 have no shader '
-                   'objects in their Windows drivers. Updating the driver may help; otherwise this PC is not supported '
-                   'yet (ULTRS_SKIP_GPU_CHECK=1 builds anyway)')
+    if any(not missing for _, kind, _, missing in found if kind != 'CPU'):
+        return 'ok', '; '.join(l for l in lines if l.endswith('supported'))
+    layered = gpus(LAYER) or []
+    if any(not missing for _, kind, _, missing in layered if kind != 'CPU'):
+        return 'layer', ('; '.join(lines) + '. With the Khronos shader object layer (Vulkan SDK) installed here the game can '
+                         'run through it: start it with VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_shader_object and '
+                         'TOTK_VK_DESCRIPTOR_SETS=1. Slower, possibly with artefacts, and not supported')
+    return 'no', ('no graphics card here can run the game: ' + '; '.join(lines or ['none reported']) +
+                  '. It needs Vulkan 1.3 with VK_EXT_shader_object: a current driver for NVIDIA GTX 900 or newer, AMD '
+                  'RX 5000 or newer, or Intel Arc / Iris Xe. AMD RX 400/500 and Vega and Intel HD 600 have no shader '
+                  'objects in their Windows drivers. Updating the driver may help; otherwise this PC is not supported yet')
 
 
 if __name__ == '__main__':
-    ok, text = check()
+    verdict, text = check()
     print(text)
-    sys.exit(0 if ok else 1)
+    sys.exit(0 if verdict == 'ok' else 1)
