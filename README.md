@@ -1,10 +1,11 @@
 # UltraTears
 
-**UltraTears** is an unofficial native PC port of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch,
-version 1.4.3) for Windows. Steam Deck and Linux support is planned and is a high priority. It is not an emulator: the
-game's program code is translated ahead of time (static recompilation, ARM64 → C → x86-64), and the Switch system and
-its NVN graphics API are replaced by the port's own implementations on Windows and Vulkan. Shaders and textures are
-converted for PC graphics cards when the game is built, not while you play.
+**UltraTears** is an unofficial builder: on your PC it turns your own copy of a Nintendo Switch game into a native
+Windows program. It works with one game, *Tears of the Kingdom* version 1.4.3. Steam Deck and Linux support is planned
+and is a high priority. It is not an emulator: the program code of your copy is translated ahead of time (static
+recompilation, ARM64 → C → x86-64), and the Switch system and its NVN graphics API are replaced by the port's own
+implementations on Windows and Vulkan. Shaders and textures are converted for PC graphics cards when the game is built,
+not while you play.
 
 > **This repository contains no game code, no game assets, no Nintendo SDK code, no firmware and no keys, and it does
 > not tell you where to get any of them.** It does nothing without a copy of the game you dumped yourself from your own
