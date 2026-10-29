@@ -60,10 +60,13 @@ The steps, what they write and how long they take on an 8-core PC:
 | `check` | nothing: checks the tools, the SHA-256 of `exefs\main`, `subsdk0`, `sdk` (1.4.3) and refuses encrypted packages | seconds | always |
 | `romfs` | `data\romfs\romfs.bin` + index: the RomFS folder in one file, read with 16 threads; its content hash is checked against 1.4.3 | ~4 min | the image is missing |
 | `lift` | `data\exefs` (a copy of the code modules), `data\generated` (the game's code as C, ~0.9 GB) | ~2 min | the lifter changed |
-| `compile` | `UltraTears.exe` (~0.4 GB) and `build\` (objects ~1.8 GB, debug symbols) | ~15 min (seconds when little changed) | sources changed (ninja) |
-| `shaders` | `data\shaders` (SPIR-V of the 28,769 shaders) | ~5 min | the finder or the translator changed; new shaders only otherwise |
+| `compile` | `UltraTears.exe` (~0.4 GB) and `build\` (objects ~1.8 GB, debug symbols); code for x86-64-v3 (AVX2), or x86-64-v2 (SSE4.2) on a CPU without AVX2 | ~15 min (seconds when little changed) | sources changed (ninja) |
+| `shaders` | `data\shaders\translated.pack`: the ~28,700 shaders as SPIR-V in one file (translated in `data\shaders\work`, removed afterwards) | ~5 min | the finder or the translator changed |
 | `textures` | `data\textures` (BC7 / BC1 of every ASTC texture, ~7.4 GB) | ~7 min | textures not yet in the cache |
-| `finish` | `ultratears.cfg` | seconds | always |
+| `finish` | `ultratears.cfg`, `UltraTears (debug).bat` | seconds | always |
+
+On its first start the game also compiles every shader for your graphics driver in the background (a few minutes,
+`data\shaders\compiled.bin`, ~0.8 GB); after a driver update it does so again.
 
 `data\`, `build\`, `userdata\`, `ultratears.cfg` and `UltraTears.exe` in the output folder hold material made from your
 copy of the game and must never be shared. After a complete build, runtime paths in `ultratears.cfg` point to the
@@ -92,6 +95,8 @@ starts, but loading reads many small files, which is slower; the packed image is
 - `encrypted packages are not accepted`: give the extracted folders, not an `.nsp` / `.xci` / `.nca`.
 - The game starts with a black window or a Vulkan error: update the graphics driver (Vulkan 1.3 with
   `VK_EXT_shader_object` is needed).
+- For a bug report, attach `ultratears.log` from the game folder (`ultratears-previous.log` is the run before). For a
+  performance report, start the game with `UltraTears (debug).bat`: the log then also has frame timing and memory.
 
 ## Making the builder package (maintainers)
 
