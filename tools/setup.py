@@ -295,7 +295,8 @@ def step_check(dump, state):
         try:
             __import__(mod)
         except ImportError:
-            raise Fail(f'the Python package {mod} is missing: python -m pip install lz4 capstone unicorn')
+            raise Fail(f'the Python package {mod} is missing from {sys.executable}: delete the deps folder and run '
+                       'setup again to reinstall the build tools')
     toolchain.env()
     if toolchain.XLATE is None:
         raise Fail('the shader translator ultrs-shaders.exe is missing: build it with python tools/build_xlate.py '
@@ -469,6 +470,13 @@ def main():
             say(f'\nERROR preparing the build tools: {e}')
             sys.exit(1)
         importlib.reload(toolchain)
+    # The build runs on the builder's own Python (deps\python: the right version, lz4 / capstone / unicorn included),
+    # whichever Python started this: a source folder without Git (GitHub's Download ZIP) went on with the player's
+    # own, which may lack those packages or be a version they do not install on (pip then needs a C++ compiler).
+    own = ROOT / 'deps/python/python.exe'
+    if pathlib.Path(sys.executable).resolve() != own.resolve() and not os.environ.get('ULTRATEARS_SETUP_OWN_PYTHON'):
+        env = dict(os.environ, PYTHONNOUSERSITE='1', ULTRATEARS_SETUP_OWN_PYTHON='1')
+        sys.exit(subprocess.run([str(own), str(ROOT / 'tools/setup.py')] + sys.argv[1:], cwd=ROOT, env=env).returncode)
     state = load_state()
     if a.dump:
         state['dump'] = str(a.dump.resolve())
