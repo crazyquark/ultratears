@@ -210,6 +210,12 @@ def step_check(dump, state):
             raise Fail(f'the Python package {mod} is missing from {sys.executable}: delete the deps folder and run '
                        'setup again to reinstall the build tools')
     toolchain.env()
+    if not os.environ.get('ULTRS_SKIP_GPU_CHECK'):   # before an hour of building for a card the game cannot use
+        import gpu_check
+        ok, text = gpu_check.check()
+        if not ok:
+            raise Fail(text)
+        say(f'  graphics: {text}')
     if toolchain.XLATE is None:
         raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
     if packed(state) and all(ok_module(DATA / 'exefs' / n, h) for n, h in EXEFS.items()):
