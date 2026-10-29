@@ -82,6 +82,8 @@ typedef struct vkb_image {
 void vkb_image_written(vkb_image *im);   // the GPU writes it (render target, clear, copy, storage)
 int vkb_tex_refresh(VkCommandBuffer cb, vkb_image *im);   // outside a pass: the pending refresh_from copy; 1 if recorded
 
+vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im);   // outside a pass: a copy to sample im from (vkb_tex.c)
+uint64_t vkb_tex_feedback_copies(void);
 vkb_image *vkb_image_of(const tex_t *t);   // creates it on first use; NULL for textures that cannot be images yet
 // Moves the image to `layout` before work of `stage`/`access` (records a barrier on the current command buffer).
 void vkb_image_use(VkCommandBuffer cb, vkb_image *im, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);

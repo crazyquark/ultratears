@@ -115,6 +115,7 @@ typedef struct entry {
     uint64_t released, released_stamp;      // aside since this present / dirty-tracking generation
     uint8_t has_layout, layout[8];
     struct entry *shape_next, *all_next, **all_pprev;
+    struct entry *twin;                     // its copy for draws that sample it while it is their target (vkb_tex_feedback_copy)
 } entry;
 typedef struct { uint64_t serial; entry *e; } tslot;   // serial 0: free; e NULL: removed
 static tslot *g_tab;
@@ -188,7 +189,90 @@ static void entry_drop(entry *e) {   // g_mu held: out of the indexes, destroyed
     if (e->all_next) e->all_next->all_pprev = e->all_pprev;
     for (int i = 0; i < e->nviews; i++) vkb_destroy_later(e->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
     vkb_destroy_later(VK_NULL_HANDLE, e->im.img, e->im.mem);
+    if (e->twin) {
+        for (int i = 0; i < e->twin->nviews; i++) vkb_destroy_later(e->twin->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
+        vkb_destroy_later(VK_NULL_HANDLE, e->twin->im.img, e->twin->im.mem);
+        free(e->twin);
+    }
     free(e);
+}
+
+// ---- without attachment feedback loops (VK_EXT_attachment_feedback_loop_layout + _dynamic_state: AMD's Windows drivers
+// lack the second, 2026-10-29): a draw that samples one of its own targets reads a copy of it taken just before the
+// draw. It read an empty texture before - the lighting and compositing passes of TOTK do this, and every discrete AMD
+// card showed a black screen (RX 570 with the shader object layer: the 3D scene without anything composed over it).
+// The copy is the target's twin: an image of the same format, size, levels and layers made once and kept, an entry of
+// its own so that the draw's views of it are made as for any texture. Recorded outside a pass (the caller ends it).
+static uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want);   // below
+static _Atomic uint64_t g_fb_copies;   // copies made (vkb_tex_feedback_copies)
+uint64_t vkb_tex_feedback_copies(void) { return g_fb_copies; }
+static int twin_make(entry *src) {
+    entry *t = calloc(1, sizeof *t);
+    if (!t) return 0;
+    const vkb_image *s = &src->im;
+    VkImageType type = s->depth > 1 ? VK_IMAGE_TYPE_3D : s->height == 1 && (s->d.target == NVN_TEXTURE_TARGET_1D ||
+                       s->d.target == NVN_TEXTURE_TARGET_1D_ARRAY) ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D;
+    int ms = s->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || s->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+    VkImageCreateFlags flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;   // as create()
+    if (type == VK_IMAGE_TYPE_2D && !ms && s->layers >= 6 && s->width == s->height) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    if (type == VK_IMAGE_TYPE_3D) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = s->format,
+        .extent = {s->width, s->height, s->depth}, .mipLevels = s->levels, .arrayLayers = s->layers,
+        .samples = ms && s->d.samples > 1 ? (VkSampleCountFlagBits)s->d.samples : VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    if (vk.vkCreateImage(vkc.device, &ci, NULL, &t->im.img) != VK_SUCCESS) { free(t); return 0; }
+    VkMemoryRequirements req;
+    vk.vkGetImageMemoryRequirements(vkc.device, t->im.img, &req);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size,
+                               .memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    vkb_mtag = MT_IMAGE;
+    if (ai.memoryTypeIndex == UINT32_MAX || vk.vkAllocateMemory(vkc.device, &ai, NULL, &t->im.mem) != VK_SUCCESS) {
+        vk.vkDestroyImage(vkc.device, t->im.img, NULL);
+        free(t);
+        return 0;
+    }
+    vk.vkBindImageMemory(vkc.device, t->im.img, t->im.mem, 0);
+    VkImage img = t->im.img;
+    VkDeviceMemory mem = t->im.mem;
+    t->im = *s;   // the source's description (format, size, NVN texture for its views) ...
+    t->im.img = img; t->im.mem = mem; t->im.layout = VK_IMAGE_LAYOUT_UNDEFINED;   // ... with its own image
+    t->im.usage = ci.usage; t->im.gpu_written = 1; t->im.storage = NULL; t->im.cpu_visible = 0; t->im.wb_pending = 0;
+    t->im.refresh_from = NULL; t->im.uploading = 0;
+    src->twin = t;
+    return 1;
+}
+vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im) {
+    entry *e = (entry *)im;
+    static int said;
+    vkb_lock(&g_mu, LK_IMAGES);
+    entry *t = e->twin;
+    if (t && (t->im.format != im->format || t->im.width != im->width || t->im.height != im->height ||
+              t->im.depth != im->depth || t->im.levels != im->levels || t->im.layers != im->layers)) {
+        for (int i = 0; i < t->nviews; i++) vkb_destroy_later(t->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
+        vkb_destroy_later(VK_NULL_HANDLE, t->im.img, t->im.mem);
+        free(t);
+        e->twin = t = NULL;
+    }
+    if (!t && twin_make(e)) t = e->twin;
+    pthread_mutex_unlock(&g_mu);
+    if (!t) return im;
+    if (!said++) VLOG("no attachment feedback loops: draws that sample their own target read a copy (texture %llu first)",
+                      (unsigned long long)im->serial);
+    vkb_image_use(cb, im, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vkb_image_use(cb, &t->im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageCopy r[16];
+    uint32_t n = im->levels < 16 ? im->levels : 16;
+    for (uint32_t l = 0; l < n; l++) {
+        uint32_t w = im->width >> l ? im->width >> l : 1, h = im->height >> l ? im->height >> l : 1, d = im->depth >> l ? im->depth >> l : 1;
+        r[l] = (VkImageCopy){.srcSubresource = {im->aspect, l, 0, im->depth > 1 ? 1 : im->layers},
+                             .dstSubresource = {im->aspect, l, 0, im->depth > 1 ? 1 : im->layers}, .extent = {w, h, d}};
+    }
+    vkb_checkpoint("feedback copy", NULL, NULL);
+    vk.vkCmdCopyImage(cb, im->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->im.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
+    vkb_image_use(cb, &t->im, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+    atomic_fetch_add(&g_fb_copies, 1);
+    return &t->im;
 }
 static void aside_purge(void) {   // g_mu held: entries aside too long (or too many) go
     uint64_t now = vkb_frame();

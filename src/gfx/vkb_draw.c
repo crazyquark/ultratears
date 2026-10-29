@@ -500,15 +500,18 @@ static vkb_image *handle_image(uint64_t h, const view_t **view) {
 // without it they would leave the pass, and the draw saw an empty texture instead (the audit's top substitution).
 static __thread vkb_image *g_fb_rt[9];   // this draw's targets: colour 0-7, depth 8
 static __thread uint32_t g_fb;           // the targets it samples (vkb.h VKB_FB_DEPTH)
+// Without the extension: the targets it samples (g_fbcopy) are read from copies taken before the draw (vkb_tex_feedback_copy).
+static __thread uint32_t g_fbcopy;
+static __thread vkb_image *g_fbtwin[9];
 
 static int fb_index(const vkb_image *im) {   // the target bit of a sampled image, -1: not a target of this draw
     for (int i = 0; im && i < 9; i++) if (g_fb_rt[i] == im) return i;
     return -1;
 }
 static void feedback_scan(const vkb_shader *vs, const vkb_shader *fs) {
-    g_fb = 0;
+    g_fb = g_fbcopy = 0;
     memset(g_fb_rt, 0, sizeof g_fb_rt);
-    if (!vkc.has_feedback_loop) return;
+    memset(g_fbtwin, 0, sizeof g_fbtwin);
     const p_set_rt *rt = vkb_rt();
     int n = rt->n < 0 ? 0 : rt->n > 8 ? 8 : rt->n, any = 0;
     for (int i = 0; i < n; i++) if (rt->color[i]) any |= (g_fb_rt[i] = vkb_image_of(rt->color[i])) != NULL;
@@ -522,8 +525,20 @@ static void feedback_scan(const vkb_shader *vs, const vkb_shader *fs) {
             if (b >= 0) g_fb |= 1u << b;
         }
     }
+    static int copies = -1;   // TOTK_VK_NO_FEEDBACK=2 (development): no copies, sampled targets read empty as before
+    if (copies < 0) copies = !(getenv("TOTK_VK_NO_FEEDBACK") && *getenv("TOTK_VK_NO_FEEDBACK") == '2');
+    if (!vkc.has_feedback_loop) { g_fbcopy = copies ? g_fb : 0; g_fb = 0; }   // copies instead (draw: fb_copies)
 }
 static int fb_sampled(const vkb_image *im) { int b = fb_index(im); return b >= 0 && ((g_fb >> b) & 1); }
+static vkb_image *fb_twin(vkb_image *im) {   // what the draw samples for im: its copy when it is a copied target
+    int b = g_fbcopy ? fb_index(im) : -1;
+    return b >= 0 && g_fbtwin[b] ? g_fbtwin[b] : im;
+}
+static void fb_copies(void) {   // outside a pass: the sampled targets copied (no feedback loops)
+    VkCommandBuffer cb = vkb_cmd();
+    for (int b = 0; b < 9; b++)
+        if ((g_fbcopy >> b & 1) && g_fb_rt[b]) g_fbtwin[b] = vkb_tex_feedback_copy(cb, g_fb_rt[b]);
+}
 
 // ---------------- buffers ----------------
 static VkBuffer g_zero;   // 64 KiB of zeros for unbound buffers
@@ -776,7 +791,7 @@ static void prepare_images(const vkb_shader *sh, int stage) {
     VkCommandBuffer cb = vkb_cmd();
     for (int i = 0; i < sh->ntex; i++) {
         const view_t *v = NULL;
-        vkb_image *im = sh->tex[i].separate ? NULL : handle_image(S.tex[stage][sh->tex[i].slot], &v);
+        vkb_image *im = sh->tex[i].separate ? NULL : fb_twin(handle_image(S.tex[stage][sh->tex[i].slot], &v));
         if (im && im->refresh_from) vkb_tex_refresh(cb, im);
         if (!im || fb_sampled(im)) continue;   // a sampled target: the pass sets its layout
         vkb_tex_upload(cb, im);
@@ -799,7 +814,7 @@ static int images_need_work(const vkb_shader *sh, int stage) {
     int mt = vkb_mt_recording();
     for (int i = 0; i < sh->ntex; i++) {
         const view_t *v = NULL;
-        vkb_image *im = sh->tex[i].separate ? NULL : handle_image(S.tex[stage][sh->tex[i].slot], &v);
+        vkb_image *im = sh->tex[i].separate ? NULL : fb_twin(handle_image(S.tex[stage][sh->tex[i].slot], &v));
         // render targets have no upload stamp: only their layout matters (this ended the pass at every draw before)
         if (!im || fb_sampled(im)) continue;
         if (mt) vkb_tex_upload(VK_NULL_HANDLE, im);
@@ -963,7 +978,7 @@ static void write_stage(writes_t *W, VkDescriptorSet set, const vkb_shader *sh, 
     for (int i = 0; i < sh->ntex; i++) {
         uint64_t h = sh->tex[i].separate ? 0 : S.tex[stage][sh->tex[i].slot];
         const view_t *v = NULL;
-        vkb_image *im = h ? handle_image(h, &v) : NULL;
+        vkb_image *im = h ? fb_twin(handle_image(h, &v)) : NULL;
         VkImageViewType vt = view_type_of(sh->tex[i].type);
         int readable = im && (fb_sampled(im) ? vkb_layout_is(im, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
                                              : vkb_layout_is(im, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
@@ -1837,7 +1852,8 @@ void vkb_draw(const uint8_t *a, int indexed) {
         }
     }
     feedback_scan(vs, fs);
-    if (vkb_in_pass() && vkb_pass_fb() != g_fb) vkb_pass_end_r(PE_FEEDBACK);   // [temporary] a pass per change of sampled targets
+    if (vkb_in_pass() && (vkb_pass_fb() != g_fb || g_fbcopy)) vkb_pass_end_r(PE_FEEDBACK);   // [temporary] a pass per change of sampled targets
+    if (g_fbcopy) fb_copies();
     if ((vkb_in_pass() && (images_need_work(vs, 0) || (fs && images_need_work(fs, 1))))) vkb_pass_end_r(PE_IMAGES);
     if (!vkb_in_pass()) {
         prepare_images(vs, 0);

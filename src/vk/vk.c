@@ -238,6 +238,12 @@ static int create_device(void) {
     vkc.has_interlock = vkc.has_interlock && ffsi.fragmentShaderPixelInterlock;
     if (!vkc.has_interlock) LOG("no fragment shader pixel interlock: shaders that use it run without it");
     vkc.has_feedback_loop = has_fl && has_fld && ffl.attachmentFeedbackLoopLayout && ffld.attachmentFeedbackLoopDynamicState;
+    // TOTK_VK_NO_FEEDBACK=1 (development): as on a GPU without them (AMD on Windows): the copies of vkb_tex_feedback_copy;
+    // =2: without the copies either (sampled targets read empty, as before 2026-10-29)
+    if (getenv("TOTK_VK_NO_FEEDBACK") && *getenv("TOTK_VK_NO_FEEDBACK") != '0') {
+        vkc.has_feedback_loop = 0;
+        has_fl = has_fld = 0;
+    }
     if (!vkc.has_feedback_loop) LOG("no attachment feedback loops: textures that are attachments of their pass read empty");
     vkc.has_local_read = has_lr && flr.dynamicRenderingLocalRead;
     if (vkc.has_feedback_loop && !vkc.has_local_read) LOG("no barriers inside a pass: a draw sampling its own target may miss earlier draws' writes");
