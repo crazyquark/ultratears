@@ -367,10 +367,72 @@ static int create(vkb_image *im, const tex_t *t) {
 // The fix is to keep the size fixed (no dynamic resolution).
 static _Atomic uint64_t g_write_seq;
 static uint64_t g_refreshes;
+
+// ---- TOTK_DEPTH_AUDIT (vkb.h) ----
+// The depth images the GPU drew are recorded by value (game memory range, format, size, write_seq), so a colour texture
+// over the same memory that is read after the depth was drawn shows: on the Switch it would see the depth's bytes; here
+// GPU-drawn depth stays in its D32F image (no write-back of depth).
+enum { DA_MAX = 256 };
+typedef struct { const uint8_t *at; uint64_t size, seq, serial, frame; uint32_t format, w, h; } da_depth;
+static da_depth g_da[DA_MAX];
+static int g_nda;
+static pthread_mutex_t g_da_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_da_reads, g_da_hits, g_da_bias[5];   // bias: D16, D24, D32F, D32F_S8, other / none
+int vkb_depth_audit_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("TOTK_DEPTH_AUDIT"); on = e && *e == '1'; }
+    return on;
+}
+static void da_written(const vkb_image *im) {
+    if (!im->storage || !(im->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
+    nvn_texlayout L;
+    nvn_tex_layout(&im->d, &L);
+    pthread_mutex_lock(&g_da_mu);
+    int i = 0;
+    while (i < g_nda && g_da[i].serial != im->serial) i++;
+    if (i == g_nda) {
+        if (g_nda < DA_MAX) g_nda++;
+        else { i = 0; for (int k = 1; k < g_nda; k++) if (g_da[k].seq < g_da[i].seq) i = k; }   // the oldest makes room
+    }
+    g_da[i] = (da_depth){im->storage, L.size, im->write_seq, im->serial, vkb_frame(), im->d.format, im->width, im->height};
+    pthread_mutex_unlock(&g_da_mu);
+}
+void vkb_depth_audit_read(const vkb_image *im, const char *how) {
+    if (!im || !im->storage || (im->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
+    atomic_fetch_add(&g_da_reads, 1);
+    nvn_texlayout L;
+    nvn_tex_layout(&im->d, &L);
+    pthread_mutex_lock(&g_da_mu);
+    for (int i = 0; i < g_nda; i++) {
+        const da_depth *d = &g_da[i];
+        if (d->seq <= im->write_seq || !(im->storage < d->at + d->size && d->at < im->storage + L.size)) continue;
+        uint64_t n = atomic_fetch_add(&g_da_hits, 1) + 1;
+        if (n <= 40 || !(n & (n - 1)))   // the first 40, then at powers of two
+            VLOG("[depth audit] %s of colour texture %llu (format %#x %ux%u, %s) over depth %llu (format %#x %ux%u, drawn at present "
+                 "%llu) - present %llu, %llu so far", how, (unsigned long long)im->serial, im->d.format, im->width, im->height,
+                 im->gpu_written ? "GPU-written before" : "from game memory", (unsigned long long)d->serial, d->format, d->w, d->h,
+                 (unsigned long long)d->frame, (unsigned long long)vkb_frame(), (unsigned long long)n);
+        break;
+    }
+    pthread_mutex_unlock(&g_da_mu);
+}
+void vkb_depth_audit_bias(const vkb_image *depth, float units, float factor) {
+    if (units == 0 && factor == 0) return;
+    uint32_t f = depth ? depth->d.format : 0;
+    int k = f == 0x32 ? 0 : f == 0x33 || f == 0x35 ? 1 : f == 0x34 ? 2 : f == 0x36 ? 3 : 4;
+    static const char *const name[5] = {"D16", "D24", "D32F", "D32F_S8", "other / none"};
+    uint64_t n = atomic_fetch_add(&g_da_bias[k], 1) + 1;
+    if (n <= 4 || !(n & (n - 1)))
+        VLOG("[depth audit] depth bias units %g factor %g on a %s target (format %#x %ux%u) - present %llu, %llu such draws so far",
+             units, factor, name[k], f, depth ? depth->width : 0, depth ? depth->height : 0, (unsigned long long)vkb_frame(),
+             (unsigned long long)n);
+}
+
 void vkb_image_written(vkb_image *im) {
     im->gpu_written = 1;
     im->write_seq = atomic_fetch_add(&g_write_seq, 1) + 1;
     im->write_frame = vkb_frame();
+    if (vkb_depth_audit_on()) da_written(im);
     if (im->cpu_visible && !__atomic_exchange_n(&im->wb_pending, 1, __ATOMIC_SEQ_CST)) {   // into the write-back queue
         pthread_mutex_lock(&g_wbq_mu);
         if (g_nwbq == g_capwbq && !(g_wbq = realloc(g_wbq, sizeof *g_wbq * (size_t)(g_capwbq = g_capwbq ? g_capwbq * 2 : 256)))) die("write-back queue");
@@ -1163,6 +1225,12 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     if (!row) row = wb;
     if (!img) img = row * by;
     vkb_image *im = vkb_image_of(t);
+    if (vkb_depth_audit_on()) {
+        if (im && (im->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
+            VLOG("[depth audit] ReadTexels of depth texture %llu (format %#x %ux%u, %s): depth is not written back to game memory",
+                 (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, im->gpu_written ? "GPU-written" : "from game memory");
+        else vkb_depth_audit_read(im, "ReadTexels");
+    }
     int is3d = t->d.target == NVN_TEXTURE_TARGET_3D;
     static int calls;
     if (calls++ < 8) VLOG("ReadTexels: texture %llu format %#x level %u region %dx%dx%d, %s", (unsigned long long)t->serial, t->d.format,

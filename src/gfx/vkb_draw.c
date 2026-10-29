@@ -500,6 +500,7 @@ static vkb_image *handle_image(uint64_t h, const view_t **view) {
     if (g_treg[id].has_view) { v = &views[next++ & 63]; *v = g_treg[id].v; }
     vkb_rw_read_end(&g_reg_mu);
     vkb_image *im = vkb_image_of(&t);
+    if (vkb_depth_audit_on()) vkb_depth_audit_read(im, "sample");
     // Texture objects over the same memory share one image whatever their swizzle (it does not change the memory): an
     // object whose swizzle differs from the image's own gets it through its view. TOTK draws the minimap through one
     // object and samples it through another with alpha ONE; as separate images the sampled one stayed empty.
@@ -1227,6 +1228,7 @@ static void set_dynamic_state(VkCommandBuffer cb, int ncolor, VkExtent2D ext, Vk
     int bias = S.has_poly && (S.poly.offset_en & 4);
     DYN(D_BIAS_EN, VkBool32, (VkBool32)bias, vk.vkCmdSetDepthBiasEnable(cb, v_));
     { float b[3] = {S.po.units, S.po.clamp, S.po.factor}; if (dyn(D_BIAS, b, sizeof b)) vk.vkCmdSetDepthBias(cb, b[0], b[1], b[2]); }
+    if (bias && vkb_depth_audit_on()) { const p_set_rt *rt = vkb_rt(); vkb_depth_audit_bias(rt->depth ? vkb_image_of(rt->depth) : NULL, S.po.units, S.po.factor); }
     DYN(D_LINEW, float, 1.0f, vk.vkCmdSetLineWidth(cb, v_));
     DYN(D_CLAMP, VkBool32, S.depth_clamp != 0, vk.vkCmdSetDepthClampEnableEXT(cb, v_));
     DYN(D_CLIP, VkBool32, !S.depth_clamp, vk.vkCmdSetDepthClipEnableEXT(cb, v_));

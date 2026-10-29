@@ -80,6 +80,12 @@ typedef struct vkb_image {
     struct vkb_image *refresh_from;   // newer contents at the same memory in another size: scaled in before use (vkb_tex.c)
 } vkb_image;
 void vkb_image_written(vkb_image *im);   // the GPU writes it (render target, clear, copy, storage)
+// TOTK_DEPTH_AUDIT=1 (development, vkb_tex.c): depth is D32F here, D16/D24 in the game. Logs colour textures sampled
+// (how "sample") or read back (how "ReadTexels") from memory the GPU drew depth into after they were last written, and
+// depth bias by the depth target's format (vkb_draw.c).
+int vkb_depth_audit_on(void);
+void vkb_depth_audit_read(const vkb_image *im, const char *how);
+void vkb_depth_audit_bias(const vkb_image *depth, float units, float factor);
 int vkb_tex_refresh(VkCommandBuffer cb, vkb_image *im);   // outside a pass: the pending refresh_from copy; 1 if recorded
 
 vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im);   // outside a pass: a copy to sample im from (vkb_tex.c)
