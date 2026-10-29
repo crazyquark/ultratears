@@ -68,6 +68,25 @@ class Fail(Exception):
     pass
 
 
+ASKED = 0.0   # seconds spent waiting for the player's answers: not build time (a build "took 46 min" with 28 of them
+              # at the question whether to delete the dump, 2026-10-29)
+
+
+def ask(question):
+    """The player's answer on a console ('' without one, or on Ctrl+C), lower case."""
+    global ASKED
+    if not (sys.stdin and sys.stdin.isatty()):
+        return ''
+    t0 = time.time()
+    try:
+        return input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        say('')
+        return ''
+    finally:
+        ASKED += time.time() - t0
+
+
 def say(msg):
     print(msg, flush=True)
 
@@ -217,13 +236,7 @@ def step_check(dump, state):
             say(f'  graphics: {text}')
         else:   # the player decides: an unsupported card may still be worth a try (ULTRS_SKIP_GPU_CHECK=1: no question)
             say(f'  graphics: {text}')
-            answer = ''
-            if sys.stdin and sys.stdin.isatty():
-                try:
-                    answer = input('  Build anyway? [y/N] ').strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    say('')
-            if answer not in ('y', 'yes', 'д', 'да'):
+            if ask('  Build anyway? [y/N] ') not in ('y', 'yes', 'д', 'да'):
                 raise Fail('stopped at the graphics card check (ULTRS_SKIP_GPU_CHECK=1 builds without asking)')
     if toolchain.XLATE is None:
         raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
@@ -411,9 +424,8 @@ def step_finish(dump, state, cpus):
     (ROOT / 'build/UltraTears.exe').unlink(missing_ok=True)   # where builds before 0.1.0 linked it
     if (dump / 'romfs').is_dir():
         say(f'  The game reads data\\romfs and data\\exefs now: {dump} (16 GB) is no longer needed.')
-        if sys.stdin.isatty() and dump.resolve() == (ROOT / 'game').resolve():
-            answer = input('  Delete game\\exefs and game\\romfs to free 16 GB? [y/N] ').strip().lower()
-            if answer in ('y', 'yes', 'д', 'да'):
+        if dump.resolve() == (ROOT / 'game').resolve():
+            if ask('  Delete game\\exefs and game\\romfs to free 16 GB? [y/N] ') in ('y', 'yes', 'д', 'да'):
                 for sub in ('exefs', 'romfs'):
                     shutil.rmtree(dump / sub, ignore_errors=True)
                 say('  deleted')
@@ -492,8 +504,8 @@ def main():
     for i, (name, fn) in enumerate(STEPS, 1):
         if a.only and name != a.only and name != 'check':
             continue
-        say(f'[{i}/{len(STEPS)}] {name}' + (f'  ({progress.clock(time.time() - t_all)} since the start)' if i > 1 else ''))
-        t0 = time.time()
+        say(f'[{i}/{len(STEPS)}] {name}' + (f'  ({progress.clock(time.time() - t_all - ASKED)} since the start)' if i > 1 else ''))
+        t0, asked0 = time.time(), ASKED
         try:
             result = fn(dump, state) if name == 'check' else fn(dump, state, a.cpus)
         except Fail as e:
@@ -501,8 +513,8 @@ def main():
             save_state(state)
             sys.exit(1)
         save_state(state)
-        say(f'  {result or "ok"} ({progress.clock(time.time() - t0)})')
-    say(f'\nDone in {progress.clock(time.time() - t_all)}. Start the game: UltraTears.exe in {ROOT}')
+        say(f'  {result or "ok"} ({progress.clock(time.time() - t0 - (ASKED - asked0))})')
+    say(f'\nDone in {progress.clock(time.time() - t_all - ASKED)}. Start the game: UltraTears.exe in {ROOT}')
 
 
 if __name__ == '__main__':

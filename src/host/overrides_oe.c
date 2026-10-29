@@ -69,7 +69,8 @@ static uint64_t desired_language(void) {
 }
 
 static int focus_policy;
-static unsigned resume_notification, operation_notification, performance_notification;
+// What the game asked to be told; kept for when the port sends these (the mode never changes yet). Unused till then.
+__attribute__((unused)) static unsigned resume_notification, operation_notification, performance_notification;
 static uint32_t performance_configuration[2];
 
 HLE_FUNC("_ZN2nn2oe18GetDesiredLanguageEv", oe_desired_language) { c->x[0] = desired_language(); }

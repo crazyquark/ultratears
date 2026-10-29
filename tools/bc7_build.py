@@ -85,7 +85,7 @@ def main():
             bar.finish()
             print(text, flush=True)
         else:
-            print(text, flush=True)
+            bar.note(text.strip())   # a line of its own, the progress line below it ("0:00cache ..." ran together)
     rc = run_limited([str(exe), str(rom.image or rom.root), str(lst), str(cache), str(a.threads), str(a.quality),
                       str(a.max_block_area)], env,
                      (1 << a.threads) - 1, line)
