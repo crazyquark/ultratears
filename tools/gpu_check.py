@@ -92,8 +92,8 @@ def check():
                          'run through it: start it with VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_shader_object and '
                          'TOTK_VK_DESCRIPTOR_SETS=1. Slower, possibly with artefacts, and not supported')
     return 'no', ('no graphics card here can run the game: ' + '; '.join(lines or ['none reported']) +
-                  '. It needs Vulkan 1.3 with VK_EXT_shader_object: a current driver for NVIDIA GTX 900 or newer, AMD '
-                  'RX 5000 or newer, or Intel Arc / Iris Xe. AMD RX 400/500 and Vega and Intel HD 600 have no shader '
+                  '. It needs Vulkan 1.3 with VK_EXT_shader_object: a current driver for NVIDIA (tested on RTX 3060) '
+                  'or AMD RX 6000 or newer. AMD RX 400/500 and Vega and Intel HD 600 have no shader '
                   'objects in their Windows drivers. Updating the driver may help; otherwise this PC is not supported yet')
 
 
