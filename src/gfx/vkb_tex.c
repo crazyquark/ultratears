@@ -408,9 +408,11 @@ void vkb_depth_audit_read(const vkb_image *im, const char *how) {
         if (d->seq <= im->write_seq || !(im->storage < d->at + d->size && d->at < im->storage + L.size)) continue;
         uint64_t n = atomic_fetch_add(&g_da_hits, 1) + 1;
         if (n <= 40 || !(n & (n - 1)))   // the first 40, then at powers of two
-            VLOG("[depth audit] %s of colour texture %llu (format %#x %ux%u, %s) over depth %llu (format %#x %ux%u, drawn at present "
-                 "%llu) - present %llu, %llu so far", how, (unsigned long long)im->serial, im->d.format, im->width, im->height,
-                 im->gpu_written ? "GPU-written before" : "from game memory", (unsigned long long)d->serial, d->format, d->w, d->h,
+            VLOG("[depth audit] %s of colour texture %llu (format %#x %ux%u, %llu bytes at depth %+lld, %s %llu) over depth %llu "
+                 "(format %#x %ux%u, %llu bytes, drawn at present %llu) - present %llu, %llu so far", how, (unsigned long long)im->serial,
+                 im->d.format, im->width, im->height, (unsigned long long)L.size, (long long)(im->storage - d->at),
+                 im->gpu_written ? "GPU-written at present" : "from game memory, upload", im->gpu_written ? (unsigned long long)im->write_frame
+                 : (unsigned long long)im->upload_stamp, (unsigned long long)d->serial, d->format, d->w, d->h, (unsigned long long)d->size,
                  (unsigned long long)d->frame, (unsigned long long)vkb_frame(), (unsigned long long)n);
         break;
     }
