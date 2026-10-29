@@ -32,16 +32,19 @@ def main():
     import progress
     bar = progress.Bar('translating the code', 0, 'functions')
     while any(p.poll() is None for _, _, p in procs):
-        done = total = 0
-        for name, _, _ in procs:
+        done = total = known = 0
+        for name, _, p in procs:
             try:
                 tail = (out / f'{name}.log').read_bytes()[-400:].decode(errors='replace')
             except OSError:
                 continue
             m = re.findall(r'progress (\d+)/(\d+)', tail)
             if m:
-                done, total = done + int(m[-1][0]), total + int(m[-1][1])
-        bar.update(done, total)
+                done, total, known = done + int(m[-1][0]), total + int(m[-1][1]), known + 1
+            elif p.poll() is not None:
+                known += 1
+        # a percentage only once every lifter has counted its functions (main analyses for ~40 s first)
+        bar.update(done, total) if known == len(procs) else bar.update(0, 0)
         time.sleep(0.5)
     bar.finish()
     failed = False
