@@ -818,20 +818,30 @@ static int to_bc7(vkb_image *im, int srgb, int fmt) {
 }
 typedef struct { const uint8_t *rows; uint8_t *rgba; vkb_bc7_key k; uint32_t level, layer, lw, lh, ld; int have, fmt; VkDeviceSize slice; } surf_t;
 static uint64_t g_bc7_images;   // images made BC7 (the log line)
+// The ASTC blocks in rows are for the CPU only (the cache key, a miss decoded): laid out in ordinary memory. They were
+// put in upload memory and read back from it for the key - memory the CPU reads very slowly (uncached, often on the GPU):
+// 25-48 ms for a 240x384 array texture of 60 layers and 9 levels, the hitches in the Depths (2026-10-29).
 static void astc_upload(VkCommandBuffer cb, vkb_image *im, const uint8_t *src, int bw, int bh, int srgb) {
     const nvn_texdesc *d = &im->d;
     int ns = (int)(im->levels * im->layers), k = 0, all = 1, fmt = -1;
     surf_t *sf = calloc((size_t)(ns ? ns : 1), sizeof *sf);
     if (!sf) die("ASTC surfaces");
+    size_t total = 0;
+    for (uint32_t level = 0; level < im->levels; level++) {
+        uint32_t lw = im->width >> level ? im->width >> level : 1, lh = im->height >> level ? im->height >> level : 1;
+        uint32_t ld = im->depth >> level ? im->depth >> level : 1;
+        total += (size_t)((lw + bw - 1) / bw) * 16 * ((lh + bh - 1) / bh) * ld * im->layers;
+    }
+    uint8_t *arena = malloc(total ? total : 1), *at = arena;
+    if (!arena) die("ASTC blocks");
     for (uint32_t level = 0; level < im->levels; level++) {
         uint32_t lw = im->width >> level ? im->width >> level : 1, lh = im->height >> level ? im->height >> level : 1;
         uint32_t ld = im->depth >> level ? im->depth >> level : 1;
         uint32_t bx = (lw + bw - 1) / bw, by = (lh + bh - 1) / bh, pitch = bx * 16;
         VkDeviceSize slice = (VkDeviceSize)pitch * by, bytes = slice * ld;
         for (uint32_t layer = 0; layer < im->layers; layer++, k++) {
-            VkBuffer buf;
-            VkDeviceSize off;
-            uint8_t *rows = vkb_ring_alloc(bytes, 16, &buf, &off);
+            uint8_t *rows = at;
+            at += bytes;
             surf_t *s = &sf[k];
             *s = (surf_t){NULL, NULL, {0, 0}, level, layer, lw, lh, ld, 0, 0, slice};
             if (nvn_deswizzle(d, level, layer, src, rows, pitch)) { all = 0; continue; }
@@ -902,6 +912,7 @@ static void astc_upload(VkCommandBuffer cb, vkb_image *im, const uint8_t *src, i
             if (sf[i].rgba && !sf[i].have) vkb_bc7_queue(sf[i].k, sf[i].rgba, sf[i].lw, sf[i].lh, sf[i].ld, srgb);
     }
     free(sf);
+    free(arena);
 }
 uint64_t vkb_bc7_images(void) { return g_bc7_images; }
 
