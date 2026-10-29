@@ -299,11 +299,12 @@ void vkb_state(uint32_t op, const uint8_t *a) {
 
 // ---------------- texture and sampler pools ----------------
 typedef struct { tex_t t; view_t v; uint8_t has_view, valid; } treg_t;
-typedef struct { samp_par p; VkSampler s; uint8_t valid; } sreg_t;
+typedef struct { samp_par p; VkSampler s; uint8_t valid, custom; } sreg_t;   // custom: s has its own border colour
 static treg_t *g_treg;
 static sreg_t *g_sreg;
 static int g_ntreg, g_nsreg;
 static vkb_rw g_reg_mu;   // game threads register while the recording threads read
+static _Atomic uint32_t g_custom_borders;   // live samplers with their own border colour (vkc.max_custom_border)
 
 static void *grow(void *a, int *n, int need, size_t elem) {
     if (need < *n) return a;
@@ -332,11 +333,16 @@ void mtl_reg_samp(int id, const samp_par *p) {
     g_sreg = grow(g_sreg, &g_nsreg, id, sizeof *g_sreg);
     sreg_t *r = &g_sreg[id];
     VkSampler old = VK_NULL_HANDLE;
-    if (r->s && (!p || memcmp(&r->p, p, sizeof *p))) { old = r->s; r->s = VK_NULL_HANDLE; }
+    int old_custom = 0;
+    if (r->s && (!p || memcmp(&r->p, p, sizeof *p))) { old = r->s; old_custom = r->custom; r->s = VK_NULL_HANDLE; r->custom = 0; }
     r->valid = p != NULL;
     if (p) r->p = *p;
     vkb_rw_write_end(&g_reg_mu);
-    if (old) { mtl_finish(); vk.vkDestroySampler(vkc.device, old, NULL); }   // [temporary] waits for the GPU
+    if (old) {
+        mtl_finish();   // [temporary] waits for the GPU
+        vk.vkDestroySampler(vkc.device, old, NULL);
+        if (old_custom) atomic_fetch_sub(&g_custom_borders, 1);
+    }
 }
 void mtl_set_tex_pool_n(int n) { (void)n; }
 
@@ -371,15 +377,29 @@ static VkSampler sampler(int id) {
     VkSamplerReductionModeCreateInfo red = {VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
         .reductionMode = p->reduction == 1 ? VK_SAMPLER_REDUCTION_MODE_MIN : p->reduction == 2 ? VK_SAMPLER_REDUCTION_MODE_MAX
                                                                                                 : VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE};
-    // [temporary] border colour: the nearest standard one (custom border colours: VK_EXT_custom_border_color later)
-    {
-        const float *b = p->border;
-        int standard = (b[0] == 0 && b[1] == 0 && b[2] == 0 && (b[3] == 0 || b[3] == 1)) || (b[0] == 1 && b[1] == 1 && b[2] == 1 && b[3] == 1);
-        if (!standard && (p->ws == 5 || p->wt == 5 || p->wr == 5 || p->ws == 4 || p->wt == 4 || p->wr == 4)) vkb_audit(A_BORDER_APPROX, NULL);
+    // Border colour. NVN takes any colour: TOTK clamps the grass interaction map to (0.5, 0.5, 0.5, 0.5), its "untouched"
+    // value; with transparent black the grass away from Link lay flat (MacNativeGames issue #49). A colour that is not
+    // one of Vulkan's three is the sampler's own (VK_EXT_custom_border_color, float, no format) while the driver's
+    // limit allows, else the nearest standard one.
+    const float *b = p->border;
+    int standard = (b[0] == 0 && b[1] == 0 && b[2] == 0 && (b[3] == 0 || b[3] == 1)) || (b[0] == 1 && b[1] == 1 && b[2] == 1 && b[3] == 1);
+    int uses_border = p->ws == 5 || p->wt == 5 || p->wr == 5 || p->ws == 4 || p->wt == 4 || p->wr == 4;
+    VkSamplerCustomBorderColorCreateInfoEXT own = {VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT, &red,
+        .customBorderColor.float32 = {b[0], b[1], b[2], b[3]}, .format = VK_FORMAT_UNDEFINED};
+    int custom = 0;
+    if (!standard && uses_border) {
+        if (vkc.has_custom_border && atomic_fetch_add(&g_custom_borders, 1) < vkc.max_custom_border) custom = 1;
+        else {
+            if (vkc.has_custom_border) atomic_fetch_sub(&g_custom_borders, 1);
+            vkb_audit(A_BORDER_APPROX, NULL);
+            static int said; if (!said++) VLOG("[sampler] border colour %g %g %g %g approximated by a standard one%s", b[0], b[1], b[2], b[3],
+                                              vkc.has_custom_border ? " (the driver's limit of custom border samplers reached)" : "");
+        }
     }
-    VkBorderColor border = p->border[3] < 0.5f ? VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK
-                         : p->border[0] > 0.5f ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE : VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, &red,
+    VkBorderColor border = custom ? VK_BORDER_COLOR_FLOAT_CUSTOM_EXT
+                         : b[3] < 0.5f ? VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK
+                         : b[0] > 0.5f ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE : VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, custom ? (void *)&own : (void *)&red,
         .magFilter = p->magf ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
         .minFilter = p->minf == 1 || p->minf == 3 || p->minf == 5 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
         .mipmapMode = p->minf == 4 || p->minf == 5 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -390,14 +410,18 @@ static VkSampler sampler(int id) {
         .borderColor = border};
     if (ci.maxLod < ci.minLod) ci.maxLod = ci.minLod;
     VkSampler s;
-    if (!vk_check(vk.vkCreateSampler(vkc.device, &ci, NULL, &s), "sampler")) return sampler(-1);
+    if (!vk_check(vk.vkCreateSampler(vkc.device, &ci, NULL, &s), "sampler")) {
+        if (custom) atomic_fetch_sub(&g_custom_borders, 1);
+        return sampler(-1);
+    }
     vkb_rw_write(&g_reg_mu, LK_TEXREG);
     int kept = id < g_nsreg && g_sreg[id].valid && !memcmp(&g_sreg[id].p, &par, sizeof par) && !g_sreg[id].s;
-    if (kept) g_sreg[id].s = s;
+    if (kept) { g_sreg[id].s = s; g_sreg[id].custom = (uint8_t)custom; }
     else if (id < g_nsreg && g_sreg[id].valid && !memcmp(&g_sreg[id].p, &par, sizeof par) && g_sreg[id].s) {   // another thread made one meanwhile
         VkSampler other = g_sreg[id].s;
         vkb_rw_write_end(&g_reg_mu);
         vk.vkDestroySampler(vkc.device, s, NULL);
+        if (custom) atomic_fetch_sub(&g_custom_borders, 1);
         return other;
     }
     vkb_rw_write_end(&g_reg_mu);

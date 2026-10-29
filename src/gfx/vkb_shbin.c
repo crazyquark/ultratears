@@ -4,7 +4,8 @@
 // shader objects follow the game's programs - made when the game sets a program, destroyed when it finalizes it -
 // without compiling again on the way back (vkb_shader.c). The file belongs to one driver build: its header holds the
 // driver's shaderBinaryUUID and shaderBinaryVersion; another driver starts the file over.
-//   header (32 bytes): "UTSHBIN2", UUID (16), version (u32), 0 (u32)
+//   header (32 bytes): "UTSHBIN2", UUID (16), version (u32), the subgroup size the shaders are pinned to (u32, 0: not
+//   pinned, vkc.subgroup_pin): binaries made with another pin are not reused
 //   record: tag "SHB1", key (32 bytes, the SHA-256 the key's hex digits spell), variant masks (5 x u32), translation
 //   stamp (u32), size (u32), data
 // A record cut short (the game stopped while writing) and what follows it are dropped when the file is opened.
@@ -72,16 +73,22 @@ static slot_t *find(const uint8_t key[32], const vkb_shbin_variant *v, int add) 
     return grave && add ? (memcpy(grave->key, key, 32), grave->v = *v, grave) : NULL;
 }
 
+static void header(uint8_t h[HEADER]) {
+    memset(h, 0, HEADER);
+    memcpy(h, MAGIC, 8);
+    memcpy(h + 8, vkc.so.shaderBinaryUUID, 16);
+    memcpy(h + 24, &vkc.so.shaderBinaryVersion, 4);
+    memcpy(h + 28, &vkc.subgroup_pin, 4);
+}
+
 static void open_file(void) {   // g_mu held
     g_init = -1;
     if (!(g_tab = calloc(CAP, sizeof *g_tab))) return;
     const char *path = getenv("TOTK_SHADER_BIN");
     if (!path || !*path) path = "data/shaders/compiled.bin";   // the driver's, apart from the translated shaders
     snprintf(g_path, sizeof g_path, "%s", path);
-    uint8_t want[HEADER] = {0};
-    memcpy(want, MAGIC, 8);
-    memcpy(want + 8, vkc.so.shaderBinaryUUID, 16);
-    memcpy(want + 24, &vkc.so.shaderBinaryVersion, 4);
+    uint8_t want[HEADER];
+    header(want);
     FILE *f = fopen(path, "r+b");
     uint8_t have[HEADER];
     if (f && (fread(have, 1, HEADER, f) != HEADER || memcmp(have, want, HEADER))) {
@@ -237,10 +244,8 @@ void vkb_shbin_compact(void) {
     char tmp[1040];
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
     FILE *o = newoff ? fopen(tmp, "wb") : NULL;
-    uint8_t head[HEADER] = {0};
-    memcpy(head, MAGIC, 8);
-    memcpy(head + 8, vkc.so.shaderBinaryUUID, 16);
-    memcpy(head + 24, &vkc.so.shaderBinaryVersion, 4);
+    uint8_t head[HEADER];
+    header(head);
     int ok = o && fwrite(head, 1, HEADER, o) == HEADER;
     uint64_t at = HEADER, copied = 0;
     void *buf = NULL;

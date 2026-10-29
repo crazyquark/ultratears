@@ -150,9 +150,24 @@ static int pick_device(void) {
     vkc.so = (VkPhysicalDeviceShaderObjectPropertiesEXT){VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
     vkc.db = (VkPhysicalDeviceDescriptorBufferPropertiesEXT){VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT, &vkc.so};
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT, &vkc.db};
-    VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &host};
+    VkPhysicalDeviceVulkan13Properties p13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &host};
+    VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
     vk.vkGetPhysicalDeviceProperties2(vkc.gpu, &p2);
     vkc.host_pointer_alignment = host.minImportedHostPointerAlignment;
+    // The shader translator (Ryujinx) assumes Maxwell's 32-lane warps for SHFL, VOTE and the lane id; a driver that
+    // picks the subgroup size per shader (AMD RDNA: 32 or 64) is told 32 per shader object (vkb_shader.c make_object).
+    // Where the size is fixed (NVIDIA: 32) nothing is pinned. TOTK_VK_SUBGROUP_PIN=0 turns it off (A/B).
+    const char *pin = getenv("TOTK_VK_SUBGROUP_PIN");
+    if (p13.minSubgroupSize <= 32 && p13.maxSubgroupSize >= 32 && p13.minSubgroupSize != p13.maxSubgroupSize && !(pin && *pin == '0')) {
+        vkc.subgroup_pin = 32;
+        vkc.subgroup_pin_stages = p13.requiredSubgroupSizeStages;
+        // a compute workgroup must fit in maxComputeWorkgroupSubgroups subgroups of 32: where the largest would not,
+        // compute shaders keep the driver's size
+        if ((uint64_t)p13.maxComputeWorkgroupSubgroups * 32 < vkc.props.limits.maxComputeWorkGroupInvocations)
+            vkc.subgroup_pin_stages &= ~(VkShaderStageFlags)VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    LOG("subgroup size %u..%u; pinned to %u for stages %#x", p13.minSubgroupSize, p13.maxSubgroupSize, vkc.subgroup_pin,
+        (unsigned)vkc.subgroup_pin_stages);
     LOG("GPU: %s (Vulkan %u.%u.%u, driver %#x)", vkc.props.deviceName, VK_API_VERSION_MAJOR(vkc.props.apiVersion),
         VK_API_VERSION_MINOR(vkc.props.apiVersion), VK_API_VERSION_PATCH(vkc.props.apiVersion), vkc.props.driverVersion);
     return 1;
@@ -179,7 +194,7 @@ static VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT ffl = {VK_STRUCTU
 static VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT ffld = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
 static int has_fl, has_fld;
 static VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR flr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
-static int has_lr;
+static int has_lr, has_cbc;
 
 static int create_device(void) {
     ExtList ex = device_extensions(vkc.gpu);
@@ -201,7 +216,7 @@ static int create_device(void) {
         {VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME, &fvids, &vkc.has_vertex_input_ds},
         {VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, &fdcc, &vkc.has_depth_clip_control},
         {VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME, &fdce, NULL},
-        {VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, &fcbc, NULL},
+        {VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, &fcbc, &has_cbc},
         {VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, &fpv, NULL},
         {VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, &fcr, NULL},
         {VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, &fu8, NULL},
@@ -255,6 +270,22 @@ static int create_device(void) {
     if (!vkc.has_feedback_loop) LOG("no attachment feedback loops: a target sampled by its own draw is attached in GENERAL (TOTK_VK_FB_FALLBACK)");
     else if (!vkc.has_feedback_dynamic) LOG("attachment feedback loops without the dynamic state: the layout alone");
     if (!vkc.has_local_read) LOG("no barriers inside a pass: a pass that drew ends before a draw sampling its target");
+    if (!f13.subgroupSizeControl && vkc.subgroup_pin) {
+        LOG("no subgroup size control: shaders run in the driver's subgroup size");
+        vkc.subgroup_pin = 0;
+    }
+    // NVN samplers take any border colour (TOTK clamps the grass interaction map to 0.5 grey); the samplers are made
+    // before the texture is known, so the colour must work without a format
+    vkc.has_custom_border = has_cbc && fcbc.customBorderColors && fcbc.customBorderColorWithoutFormat;
+    if (vkc.has_custom_border) {
+        VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &cbp};
+        vk.vkGetPhysicalDeviceProperties2(vkc.gpu, &p2);
+        vkc.max_custom_border = cbp.maxCustomBorderColorSamplers;
+        LOG("custom sampler border colours: up to %u samplers", vkc.max_custom_border);
+    } else LOG("no custom sampler border colours: the nearest standard colour is used");
+    fcbc.customBorderColors = (VkBool32)vkc.has_custom_border;   // the features enabled are the ones used
+    fcbc.customBorderColorWithoutFormat = (VkBool32)vkc.has_custom_border;
     // TOTK_VK_ROBUST=1 (development): bounds-checked buffer access, to tell a shader's out-of-range access from other
     // causes of a lost device
     if (!getenv("TOTK_VK_ROBUST")) f2.features.robustBufferAccess = VK_FALSE;

@@ -187,6 +187,11 @@ static VkResult make_object(const char *key, const vkb_shbin_variant *v, VkShade
         .nextStage = stage == VK_SHADER_STAGE_VERTEX_BIT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0,
         .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT, .codeSize = bytes, .pCode = spv, .pName = "main",
         .setLayoutCount = 1, .pSetLayouts = &layout};
+    // 32 lanes, as the translator assumes, where the driver would pick (vk.c: vkc.subgroup_pin); the binaries on disk
+    // were made the same way (their file header holds the pin, vkb_shbin.c)
+    VkShaderRequiredSubgroupSizeCreateInfoEXT lanes = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                                                       .requiredSubgroupSize = vkc.subgroup_pin};
+    if (vkc.subgroup_pin && (vkc.subgroup_pin_stages & stage)) ci.pNext = &lanes;
     void *bin;
     size_t nbin;
     if (key && vkb_shbin_get(key, v, &bin, &nbin)) {

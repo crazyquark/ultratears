@@ -68,6 +68,10 @@ typedef struct {
     int has_checkpoints;     // TOTK_VK_CHECKPOINTS=1: VK_NV_device_diagnostic_checkpoints (where a lost device stopped)
     int has_memory_budget;   // VK_EXT_memory_budget: the memory this process uses per heap (the memory log line)
     int has_buffer_marker;   // TOTK_VK_CHECKPOINTS=1: VK_AMD_buffer_marker (the same, written by the GPU to host memory)
+    int has_custom_border;   // VK_EXT_custom_border_color without a format: any sampler border colour, as on NVN
+    uint32_t max_custom_border;   // ...at most this many such samplers at once (maxCustomBorderColorSamplers)
+    uint32_t subgroup_pin;   // 32 where the driver may run shaders in other subgroup sizes (AMD: 32 or 64), else 0
+    VkShaderStageFlags subgroup_pin_stages;   // ...the stages it can pin (requiredSubgroupSizeStages)
 } VkContext;
 extern VkContext vkc;
 
