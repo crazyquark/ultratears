@@ -130,7 +130,7 @@ def fetch_all(items, cache, label):
             todo.append((item, dst))
     if not todo:
         return files
-    bar = progress.Bar(f'downloading {label}', sum(i.get('size', 0) for i, _ in todo), 'MiB', 2**20, rate=True)
+    bar = progress.Bar(f'downloading {label}', sum(i.get('size', 0) for i, _ in todo), 'MiB', 2**20, rate=True, live=True)
     for item, dst in todo:
         part = dst.with_name(dst.name + '.part')
         base = bar.done - (part.stat().st_size if part.is_file() else 0)

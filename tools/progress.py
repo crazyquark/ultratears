@@ -21,13 +21,24 @@ def _tty():
 
 
 class Bar:
-    def __init__(self, label, total, unit='', scale=1, rate=False):
-        """unit / scale: how amounts are shown (bytes as MiB: unit 'MiB', scale 2**20); rate: show the speed."""
+    def __init__(self, label, total, unit='', scale=1, rate=False, live=False):
+        """unit / scale: how amounts are shown (bytes as MiB: unit 'MiB', scale 2**20); rate: show the speed;
+        live: drawn again every second while no update comes (work that reports rarely, or a stalled download)."""
         self.label, self.total, self.unit, self.scale, self.rate = label, total, unit, scale, rate
         self.t0 = time.monotonic()
         self.last, self.done, self.width, self.tens, self.printed = 0.0, 0, 0, -1, None
         self.samples = [(self.t0, 0)]   # (time, done) of the last seconds: the speed and time left are recent ones
         self.tty = _tty()
+        self.lock = threading.RLock()
+        self.stop = threading.Event()
+        if live and self.tty:
+            threading.Thread(target=self.redraw, daemon=True).start()
+        self.update(0, force=True)
+
+    def redraw(self):
+        while not self.stop.wait(1):
+            if time.monotonic() - self.last >= 1:
+                self.update(self.done, force=True)
 
     def line(self):
         now = time.monotonic()
@@ -51,42 +62,47 @@ class Bar:
 
     def note(self, text):
         """A line of its own (a source that does not answer...), the progress line drawn again below it."""
-        if self.tty:
-            sys.stdout.write('\r' + ' ' * self.width + '\r')
-            self.width = 0
-        print(f'  {text}', flush=True)
-        self.last = 0
+        with self.lock:
+            if self.tty:
+                sys.stdout.write('\r' + ' ' * self.width + '\r')
+                self.width = 0
+            print(f'  {text}', flush=True)
+            self.last = 0
 
     def update(self, done, total=None, force=False):
-        if total is not None:
-            self.total = total
-        self.done = done
-        now = time.monotonic()
-        if now - self.samples[-1][0] >= 0.5:
-            self.samples.append((now, done))
-        if not force and now - self.last < 0.3:
-            return
-        self.last = now
-        text = self.line()
-        if self.tty:
-            sys.stdout.write('\r' + text.ljust(self.width))
-            sys.stdout.flush()
-            self.width = len(text)
-        else:
-            tens = int(10 * self.done / self.total) if self.total else 0
-            if (force or tens > self.tens) and (self.tens, self.done) != self.printed:
-                self.tens = tens
-                self.printed = (tens, self.done)
-                print(text, flush=True)
+        with self.lock:
+            if total is not None:
+                self.total = total
+            self.done = done
+            now = time.monotonic()
+            if now - self.samples[-1][0] >= 0.5:
+                self.samples.append((now, done))
+            if not force and now - self.last < 0.3:
+                return
+            self.last = now
+            text = self.line()
+            if self.tty:
+                sys.stdout.write('\r' + text.ljust(self.width))
+                sys.stdout.flush()
+                self.width = len(text)
+            else:
+                tens = int(10 * self.done / self.total) if self.total else 0
+                if (force or tens > self.tens) and (self.tens, self.done) != self.printed:
+                    self.tens = tens
+                    self.printed = (tens, self.done)
+                    print(text, flush=True)
 
     def add(self, n):
-        self.update(self.done + n)
+        with self.lock:
+            self.update(self.done + n)
 
     def finish(self):
-        self.update(self.done, force=True)
-        if self.tty:
-            sys.stdout.write('\n')
-            sys.stdout.flush()
+        self.stop.set()
+        with self.lock:
+            self.update(self.done, force=True)
+            if self.tty:
+                sys.stdout.write('\n')
+                sys.stdout.flush()
 
 
 class Ticker:

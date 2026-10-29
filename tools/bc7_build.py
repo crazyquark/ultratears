@@ -20,7 +20,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 from toolchain import CLANG64, env as tool_env  # noqa: E402
-from build_game import run_limited  # noqa: E402
+from build_game import cpu_arch, run_limited  # noqa: E402
 import progress  # noqa: E402
 from romfs import RomFS  # noqa: E402
 
@@ -34,11 +34,12 @@ def build_tool(env):
     if exe.exists() and exe.stat().st_mtime > newest:
         return exe
     objs = []
+    arch = cpu_arch()   # as the game: x86-64-v2 on CPUs without AVX2 (it was always v3: illegal instruction there)
     (ROOT / 'build/obj').mkdir(parents=True, exist_ok=True)
     for s in SOURCES_C + SOURCES_CXX:
         cxx = s.endswith('.cpp')
         obj = ROOT / 'build/obj' / ('bc7build_' + s.replace('/', '_').rsplit('.', 1)[0] + '.o')
-        cmd = [str(CLANG64 / ('clang++.exe' if cxx else 'clang.exe')), '-O2', '-march=x86-64-v3', '-w', '-c', str(ROOT / s), '-o', str(obj)]
+        cmd = [str(CLANG64 / ('clang++.exe' if cxx else 'clang.exe')), '-O2', f'-march={arch}', '-w', '-c', str(ROOT / s), '-o', str(obj)]
         if cxx:
             cmd += ['-std=c++17', '-fno-exceptions', '-fno-rtti']
         subprocess.run(cmd, check=True, env=env)
@@ -72,10 +73,11 @@ def main():
     exe = build_tool(env)
     print(f'{len(files)} texture files -> {cache}', flush=True)
     t0 = time.time()
-    bar = progress.Bar('re-encoding the textures', len(files), 'files')
+    bar = progress.Bar(f're-encoding the textures ({len(files)} files)', sum(f['size'] for f in files), 'MiB', 2**20,
+                       rate=True, live=True)
 
-    def line(text):   # bc7build's "<i> / <n> files, ..." every 500 files: the progress line; the rest as it is
-        m = re.match(r'(\d+) / (\d+) files', text)
+    def line(text):   # bc7build's "<done> / <n> files, <bytes> / <total> bytes, ..." once a second: the progress line
+        m = re.match(r'\d+ / \d+ files, (\d+) / (\d+) bytes', text)
         if m:
             bar.update(int(m.group(1)), int(m.group(2)))
         elif text.startswith('done:'):
