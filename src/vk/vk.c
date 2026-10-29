@@ -34,6 +34,20 @@ static int has_layer(const char *name) {
     return found;
 }
 
+// TOTK_VK_VALIDATION: the layer's errors and warnings into the game's log ("[validation] ..."). Without a messenger the
+// layer prints to the process's own output, which a player's log (ultratears.log) does not get (2026-10-29: a tester's
+// validation run with the output redirected came back empty).
+static VKAPI_ATTR VkBool32 VKAPI_CALL validation_message(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                         VkDebugUtilsMessageTypeFlagsEXT types,
+                                                         const VkDebugUtilsMessengerCallbackDataEXT *data, void *user) {
+    (void)types; (void)user;
+    static int said;
+    if (said++ < 5000)
+        LOG("[validation] %s %s", severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning",
+            data && data->pMessage ? data->pMessage : "(no message)");
+    return VK_FALSE;
+}
+
 static int create_instance(SDL_Window *window) {
     PFN_vkGetInstanceProcAddr gipa = NULL;
     if (window) gipa = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
@@ -54,6 +68,12 @@ static int create_instance(SDL_Window *window) {
     if (v && strcmp(v, "0") && !validate) LOG("TOTK_VK_VALIDATION: %s not installed", layer);
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "UltraTears",
                              .apiVersion = VK_API_VERSION_1_3};
+    const char *with_debug[64];   // with validation: the window's extensions and VK_EXT_debug_utils (its messenger)
+    if (validate && next < 63) {
+        for (Uint32 i = 0; i < next; i++) with_debug[i] = exts[i];
+        with_debug[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        exts = with_debug;
+    }
     VkInstanceCreateInfo ci = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = next, .ppEnabledExtensionNames = exts,
                                .enabledLayerCount = validate ? 1u : 0u, .ppEnabledLayerNames = &layer};
@@ -61,7 +81,17 @@ static int create_instance(SDL_Window *window) {
 #define LOAD(f) vk.f = (PFN_##f)gipa(vkc.instance, #f);
     VK_FN_INSTANCE(LOAD)
 #undef LOAD
-    if (validate) LOG("validation layer on");
+    if (validate) {
+        PFN_vkCreateDebugUtilsMessengerEXT create =
+            (PFN_vkCreateDebugUtilsMessengerEXT)gipa(vkc.instance, "vkCreateDebugUtilsMessengerEXT");
+        VkDebugUtilsMessengerCreateInfoEXT mi = {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
+            .pfnUserCallback = validation_message};
+        VkDebugUtilsMessengerEXT messenger;
+        int ok = create && create(vkc.instance, &mi, NULL, &messenger) == VK_SUCCESS;
+        LOG("validation layer on%s", ok ? ": its messages go to this log ([validation])" : " (no messenger: messages to the console)");
+    }
     if (window && !SDL_Vulkan_CreateSurface(window, vkc.instance, NULL, &vkc.surface)) {
         LOG("window surface: %s", SDL_GetError());
         vkc.surface = VK_NULL_HANDLE;
