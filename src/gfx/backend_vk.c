@@ -1836,19 +1836,52 @@ static _Atomic long long g_dump_key_at;   // vkb_dump_request (F9)
 // F9 range check (development): the index, vertex, constant and storage ranges the traced draws read (vkb_vcheck_add), compared once the
 // GPU is idle between the pool's copy in device memory and game memory. A range that differs where the CPU has not
 // written since the copy's update means draws read different data than the game holds (the copy went wrong).
-typedef struct { uint64_t addr, len; uint32_t draw; int kind; } vrange_t;
+// Also, for the vertex and index ranges: their game memory hashed when the draw was recorded; a range the traced frames
+// read with different contents is one the CPU rewrites frame by frame (TOTK skins on the GPU: cloth, L13).
+typedef struct { uint64_t addr, len, hash; uint32_t draw; int kind; } vrange_t;
 static vrange_t *g_vr;
 static int g_nvr, g_capvr;
 static pthread_mutex_t g_vr_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t vr_hash(uint64_t addr, uint64_t len) {
+    const uint8_t *p = (const uint8_t *)(uintptr_t)addr;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i + 8 <= len; i += 8) { uint64_t v; memcpy(&v, p + i, 8); h = (h ^ v) * 0x100000001b3ull; }
+    return h;
+}
 void vkb_vcheck_add(uint64_t addr, uint64_t len, uint32_t draw, int kind) {
+    uint64_t h = len <= (64u << 20) ? vr_hash(addr, len) : 0;
     pthread_mutex_lock(&g_vr_mu);
     int dup = 0;
-    for (int k = g_nvr - 1; k >= 0 && k >= g_nvr - 32 && !dup; k--) dup = g_vr[k].addr == addr && g_vr[k].len == len;
-    if (!dup && g_nvr < 20000) {
+    for (int k = g_nvr - 1; k >= 0 && k >= g_nvr - 32 && !dup; k--) dup = g_vr[k].addr == addr && g_vr[k].len == len && g_vr[k].hash == h;
+    if (!dup && g_nvr < 60000) {
         if (g_nvr == g_capvr && !(g_vr = realloc(g_vr, sizeof *g_vr * (size_t)(g_capvr = g_capvr ? g_capvr * 2 : 1024)))) die("range check");
-        g_vr[g_nvr++] = (vrange_t){addr, len, draw, kind};
+        g_vr[g_nvr++] = (vrange_t){addr, len, h, draw, kind};
     }
     pthread_mutex_unlock(&g_vr_mu);
+}
+static int vr_cmp(const void *a, const void *b) {
+    const vrange_t *x = a, *y = b;
+    if (x->addr != y->addr) return x->addr < y->addr ? -1 : 1;
+    if (x->len != y->len) return x->len < y->len ? -1 : 1;
+    return x->draw < y->draw ? -1 : x->draw > y->draw;
+}
+static void vchange_report(void) {   // g_vr_mu held
+    vrange_t *s = malloc(sizeof *s * (size_t)(g_nvr ? g_nvr : 1));
+    if (!s) return;
+    memcpy(s, g_vr, sizeof *s * (size_t)g_nvr);
+    qsort(s, (size_t)g_nvr, sizeof *s, vr_cmp);
+    int said = 0;
+    for (int i = 0; i < g_nvr;) {
+        int j = i, changed = 0;
+        while (j < g_nvr && s[j].addr == s[i].addr && s[j].len == s[i].len) { changed |= s[j].hash != s[i].hash; j++; }
+        static const char *const kn[] = {"indices", "vertices", "constants", "storage"};
+        if (changed && said++ < 400)
+            VLOG("[vchange] %s %#llx+%llu: contents differ between the traced draws #%u and #%u (%d reads)", kn[s[i].kind & 3],
+                 (unsigned long long)s[i].addr, (unsigned long long)s[i].len, s[i].draw, s[j - 1].draw, j - i);
+        i = j;
+    }
+    VLOG("[vchange] %d ranges read with different contents in the traced frames", said);
+    free(s);
 }
 static pool_ent *pool_find_mut(uintptr_t addr, uint64_t len);
 static void vcheck_run(void) {
@@ -1871,6 +1904,7 @@ static void vcheck_run(void) {
     map = m;
     static const char *const kinds[] = {"indices", "vertices", "constants", "storage"};
     pthread_mutex_lock(&g_vr_mu);
+    vchange_report();
     int checked = 0, bad = 0, cpu = 0, said = 0;
     for (int k = 0; k < g_nvr;) {   // in batches that fit the staging buffer
         typedef struct { vrange_t r; VkDeviceSize at; uint64_t stamp; } item;
@@ -1946,7 +1980,7 @@ void vkb_dump_request(void) {
     const char *d = getenv("TOTK_DUMP_KEY");
     if (!d || !*d || atomic_load(&g_dump_key_at)) return;
     uint64_t f = vkb_frame();
-    vkb_draw_trace_arm(f + 1, 6000);   // about two frames on the island
+    vkb_draw_trace_arm(f + 1, getenv("TOTK_DUMP_KEY_DRAWS") ? atoll(getenv("TOTK_DUMP_KEY_DRAWS")) : 6000);   // about two frames on the island
     atomic_store(&g_dump_key_at, (long long)f + 3);
     VLOG("F9: tracing from frame %llu, dump at %llu", (unsigned long long)f + 1, (unsigned long long)f + 3);
 }
