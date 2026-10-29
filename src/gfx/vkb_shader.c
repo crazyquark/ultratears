@@ -297,6 +297,7 @@ static int dref_clamp(void) {
 // .res.json's last write (seconds) and size, taken from _stat64 here and from FindFirstFile in ahead_thread.
 static uint32_t stamp_fold(uint64_t h) {
     if (dref_clamp()) h ^= 0x5BD1E995ull << 32;   // binaries made before the clamp are not used (the halves fold below)
+    if (!vkc.has_interlock) h ^= 0x27D4EB2Full << 32;   // nor those of modules with the interlock (vkb_spv_drop_interlock)
     return (uint32_t)(h ^ h >> 32) | 1;   // never 0
 }
 static uint32_t stamp_of(uint64_t mtime_s, uint64_t size) {
@@ -388,6 +389,7 @@ static int load_module(vkb_shader *s, const char *key, int nvn_stage, uint32_t *
     uint32_t *clamped = NULL;
     size_t ncl = 0;
     if (dref_clamp() && vkb_spv_clamp_dref(spv, nw, &clamped, &ncl)) { free(spv); spv = clamped; nw = ncl; }
+    if (!vkc.has_interlock) nw = vkb_spv_drop_interlock(spv, nw);   // a device without it refused these modules (RX 570)
     nspv = nw * 4;
     for (size_t i = 5; i < nw;) {
         uint32_t op = spv[i] & 0xffff, wc = spv[i] >> 16;

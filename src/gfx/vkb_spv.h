@@ -23,3 +23,7 @@ int vkb_spv_add_outputs(const uint32_t *in, size_t nwords, uint32_t locmask, uin
 // shadow map, whose compares clamp the reference; ours is D32F, whose compares do not (GitHub #34). *out as above.
 // Returns the number of compares rewritten (0: none, or a shape not handled - the caller keeps the original).
 int vkb_spv_clamp_dref(const uint32_t *in, size_t nwords, uint32_t **out, size_t *outw);
+// Without VK_EXT_fragment_shader_interlock (AMD Polaris and Intel HD 600 on Windows): the interlock dropped - its begin /
+// end, execution modes, capability and extension - in place. The section it guarded then runs unordered between
+// overlapping fragments (a rare blending artefact) instead of the module being refused. Returns the new word count.
+size_t vkb_spv_drop_interlock(uint32_t *w, size_t nwords);

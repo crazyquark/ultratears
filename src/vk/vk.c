@@ -234,6 +234,9 @@ static int create_device(void) {
         LOG("VK_EXT_shader_object is required but is not supported by this GPU or driver");
         return 0;
     }
+    // the shaders' interlock is the pixel one (vkb_spv_drop_interlock removes it where this is missing)
+    vkc.has_interlock = vkc.has_interlock && ffsi.fragmentShaderPixelInterlock;
+    if (!vkc.has_interlock) LOG("no fragment shader pixel interlock: shaders that use it run without it");
     vkc.has_feedback_loop = has_fl && has_fld && ffl.attachmentFeedbackLoopLayout && ffld.attachmentFeedbackLoopDynamicState;
     if (!vkc.has_feedback_loop) LOG("no attachment feedback loops: textures that are attachments of their pass read empty");
     vkc.has_local_read = has_lr && flr.dynamicRenderingLocalRead;

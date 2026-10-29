@@ -338,3 +338,24 @@ int vkb_spv_clamp_dref(const uint32_t *in, size_t nw, uint32_t **out, size_t *ou
     *outw = o.n;
     return n;
 }
+
+size_t vkb_spv_drop_interlock(uint32_t *w, size_t nw) {
+    enum { OP_EXTENSION = 10, OP_EXECUTION_MODE = 16, OP_CAPABILITY = 17, OP_BEGIN = 5364, OP_END = 5365 };
+    static const char ext[] = "SPV_EXT_fragment_shader_interlock";
+    if (nw < 5) return nw;
+    size_t o = 5;
+    for (size_t i = 5; i < nw;) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) return nw;   // a shape not handled: as it is
+        int drop = op == OP_BEGIN || op == OP_END ||
+                   (op == OP_CAPABILITY && wc == 2 && (w[i + 1] == 5363 || w[i + 1] == 5372 || w[i + 1] == 5378)) ||
+                   (op == OP_EXECUTION_MODE && wc >= 3 && w[i + 2] >= 5366 && w[i + 2] <= 5371) ||
+                   (op == OP_EXTENSION && (wc - 1) * 4 >= sizeof ext && !memcmp(&w[i + 1], ext, sizeof ext));
+        if (!drop) {
+            memmove(&w[o], &w[i], wc * 4);
+            o += wc;
+        }
+        i += wc;
+    }
+    return o;
+}
