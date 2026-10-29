@@ -273,9 +273,55 @@ def step_lift(dump, state, cpus):
     return 'done'
 
 
+# Ninja rebuilds what is older than its sources by file dates. A newer source ZIP unpacked over the folder (GitHub's
+# Download ZIP, no Git) dates every file anew: the whole game compiled again, ~30 min on 6 cores, though a few files
+# had changed (2026-10-29). The sources' content and date are recorded after each compile; before the steps, a file
+# whose content is unchanged gets its recorded date back, so only what changed is compiled (as after a git pull).
+SOURCE_DATES = DATA / 'source-dates.json'
+SOURCE_DIRS = ('src', 'tools/bc7build')
+
+
+def compiled_sources():
+    for d in SOURCE_DIRS:
+        for p in sorted((ROOT / d).rglob('*')):
+            if p.is_file():
+                yield p
+
+
+def keep_source_dates():
+    """Unchanged sources back to their recorded dates; how many."""
+    try:
+        old = json.loads(SOURCE_DATES.read_text())
+    except (OSError, ValueError):
+        return 0
+    n = 0
+    for p in compiled_sources():
+        rec = old.get(p.relative_to(ROOT).as_posix())
+        st = p.stat()
+        if rec and rec[1] != st.st_mtime_ns and sha256(p) == rec[0]:
+            os.utime(p, ns=(st.st_atime_ns, rec[1]))
+            n += 1
+    return n
+
+
+def record_source_dates():
+    try:
+        old = json.loads(SOURCE_DATES.read_text())
+    except (OSError, ValueError):
+        old = {}
+    new = {}
+    for p in compiled_sources():
+        rel, mtime = p.relative_to(ROOT).as_posix(), p.stat().st_mtime_ns
+        rec = old.get(rel)
+        new[rel] = [rec[0] if rec and rec[1] == mtime else sha256(p), mtime]
+    DATA.mkdir(exist_ok=True)
+    SOURCE_DATES.write_text(json.dumps(new))
+
+
 def step_compile(dump, state, cpus):
     run([sys.executable, 'tools/build_game.py', '--generated', DATA / 'generated', '--target', 'ultratears', '--cpus', cpus],
         'compiling')
+    record_source_dates()
     return 'UltraTears.exe'
 
 
@@ -324,8 +370,15 @@ def step_shaders(dump, state, cpus):
 
 
 def step_textures(dump, state, cpus):
+    # Up to date when the encoder, its settings and the RomFS are those of the last complete run: it read and checked
+    # all 44 000 texture files again on every run (minutes), though it encoded nothing new.
+    from bc7_build import SOURCES_C, SOURCES_CXX
+    stamp = tree_hash([ROOT / s for s in SOURCES_C + SOURCES_CXX] + [ROOT / 'tools/bc7_build.py']) + '/' + state.get('romfs', '')
+    if state.get('textures') == stamp and (DATA / 'textures/bc7.idx').is_file():
+        return 'up to date'
     run([sys.executable, 'tools/bc7_build.py', '--romfs', DATA / 'romfs', '--cache', DATA / 'textures', '--threads',
          min(cpus, 64)], 're-encoding the textures')
+    state['textures'] = stamp
     return 'done'
 
 
@@ -418,6 +471,9 @@ def main():
     dump = pathlib.Path(state['dump'])
     say(f'UltraTears setup: dump {dump}, {a.cpus} CPUs')
     t_all = time.time()
+    kept = keep_source_dates()
+    if kept:
+        say(f'{kept} unchanged source files keep their dates (only changed ones are compiled again)')
     for i, (name, fn) in enumerate(STEPS, 1):
         if a.only and name != a.only and name != 'check':
             continue
