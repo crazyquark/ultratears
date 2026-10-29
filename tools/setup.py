@@ -356,6 +356,24 @@ STEPS = [('check', step_check), ('romfs', step_romfs), ('lift', step_lift), ('co
          ('shaders', step_shaders), ('textures', step_textures), ('finish', step_finish)]
 
 
+def no_quick_edit():
+    """Windows' console stops a program whose output it is selecting (QuickEdit: a click into the window starts a
+    selection, the title says "Select"): a player's build sat for 5 minutes at 0 % CPU in the RomFS step
+    (2026-10-29). Off while setup runs, for this console and the tools it starts; the player's setting comes back at exit."""
+    if os.name != 'nt':
+        return
+    import atexit
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    handle = k32.GetStdHandle(-10)   # STD_INPUT_HANDLE
+    mode = ctypes.c_uint32()
+    if not handle or not k32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return   # not a console (a pipe, a file)
+    QUICK_EDIT, EXTENDED = 0x40, 0x80
+    if k32.SetConsoleMode(handle, (mode.value & ~QUICK_EDIT) | EXTENDED):
+        atexit.register(k32.SetConsoleMode, handle, mode.value)
+
+
 def main():
     ap = argparse.ArgumentParser(description='Build UltraTears from your own dump of the game.')
     ap.add_argument('--output', type=pathlib.Path,
@@ -370,6 +388,7 @@ def main():
     a = ap.parse_args()
     global KEEP_SHADER_WORK
     KEEP_SHADER_WORK = a.keep_shader_work
+    no_quick_edit()
     if is_checkout() and not a.in_place:
         sys.exit(build_from_checkout(a))
     if a.output:

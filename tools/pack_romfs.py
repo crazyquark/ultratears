@@ -26,15 +26,18 @@ ALIGN = 16
 
 
 def pack(folder, out, threads=16, progress=print):
-    """-> (file count, bytes, content hash). Writes <out>/romfs.bin, index.json, runtime-index.bin."""
-    rom = RomFS(folder)
+    """-> (file count, bytes, content hash). Writes <out>/romfs.bin, index.json, runtime-index.bin.
+    The console shows a progress line (tools/progress.py); progress is kept for callers and no longer used."""
+    import progress as bars
+    with bars.Ticker('listing the RomFS files'):
+        rom = RomFS(folder)
     if rom.image is not None:
         raise ValueError(f'{folder} is already an image')
     names = sorted(rom.files)   # byte order of the paths, as the runtime's index wants
     out.mkdir(parents=True, exist_ok=True)
     rows, total, offset = [], sum(rom.files.values()), 0
     content = hashlib.sha256()
-    t0 = last = time.time()
+    bar = bars.Bar(f'packing the RomFS ({len(names)} files)', total, 'GiB', 2**30, rate=True)
 
     def read(p):
         data = rom.read(p)
@@ -55,11 +58,8 @@ def pack(folder, out, threads=16, progress=print):
                 img.write(data)
                 offset += len(data)
                 content.update(digest)
-            if time.time() - last > 10:
-                last = time.time()
-                done = sum(r['size'] for r in rows)
-                progress(f'  RomFS: {len(rows)} / {len(names)} files, {done / 2**30:.1f} / {total / 2**30:.1f} GiB, '
-                         f'{time.time() - t0:.0f} s')
+                bar.add(len(data))
+    bar.finish()
     (out / 'romfs.bin').unlink(missing_ok=True)
     part.rename(out / 'romfs.bin')
     (out / 'index.json').write_text(json.dumps(dict(status='pass', source='folder', content_sha256=content.hexdigest(),
