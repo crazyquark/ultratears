@@ -969,6 +969,10 @@ static int tex_upload(VkCommandBuffer cb, vkb_image *im) {
         pthread_mutex_unlock(&g_mu);
     }
     __atomic_store_n(&im->uploading, 1, __ATOMIC_SEQ_CST);   // before the stamp: a thread that sees the stamp waits (vkb_tex_upload)
+    // The writes so far are collected first: the write watch is read lazily, and the game's writes that filled the
+    // texture before its first upload, seen only at the next look, came after the stamp - the same texture uploaded
+    // again at once ("first", then "pages written": 37 of 119 slow uploads in a session, 2026-10-29).
+    if (!im->vpool_gen) nvn_dirty_protect(im->storage, L.size);
     __atomic_store_n(&im->upload_stamp, nvn_dirty_now(), __ATOMIC_RELEASE);   // before reading: a write during the upload shows as dirty next time
     // A texture in a virtual pool (TOTK streams world textures this way): its addresses are only reserved, the bytes
     // are in physical pools' pages mapped through the page table — gathered into a copy first. It uploads again when
