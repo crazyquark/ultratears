@@ -212,19 +212,29 @@ void plat_thread_realtime(uint64_t period_ns) {
 }
 
 // ---- process
-// Release builds are GUI-subsystem executables (no console window): stdout / stderr go to ultratears.log next to the
-// exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
-// (the start screen re-executing itself for the game) append to the same log.
+// stdout / stderr go to ultratears.log next to the exe unless they are already captured (a file or a pipe: "> x.log
+// 2>&1"), and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. UltraTears.exe is a console
+// program: started from a .bat or a double click its log went to the console window, which closes with the game - a
+// player whose game crashed had no log to send (2026-10-29). Processes started by this one (the start screen
+// re-executing itself for the game) append to the same log.
 static char g_log_path[MAX_PATH];
 
-// TOTK_LOG_FILE=1 (or a path): the log goes to the file even with a console - under Proton the game gets a console
-// window that closes with it, and PROTON_LOG has only Wine's own lines.
-// Under Wine (Proton) always: the console there is not one the player can keep.
-static void log_to_file_without_console(void) {
+// TOTK_LOG_FILE=0: the log stays on the console (development); =1 or a path: always to that file. Under Wine (Proton)
+// always to the file: its console closes with the game, and PROTON_LOG has only Wine's own lines.
+// A constructor before all others: the first lines (the version, written first by main; the NVN registry's, from a
+// constructor) went to the console while the file got the rest.
+__attribute__((constructor(102))) static void log_to_file_without_console(void) {   // (101: boot.c reserves the guest window first)
+    static bool done;
+    if (done) return;
+    done = true;
     const char *force = getenv("TOTK_LOG_FILE");
     if (force && !*force) force = NULL;
+    if (force && !strcmp(force, "0")) return;
     if (!force && GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) force = "1";
-    if (!force && GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD type = err && err != INVALID_HANDLE_VALUE ? GetFileType(err) : FILE_TYPE_UNKNOWN;
+    if (!force && (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE)) return;   // captured by whoever started the game
+    bool console = type == FILE_TYPE_CHAR;
     char exe[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
     if (!n || n >= sizeof exe) return;
@@ -238,6 +248,7 @@ static void log_to_file_without_console(void) {
         snprintf(prev, sizeof prev, "%sultratears-previous.log", exe);
         MoveFileExA(g_log_path, prev, MOVEFILE_REPLACE_EXISTING);
     }
+    if (console) fprintf(stderr, "UltraTears: the log is written to %s\n", g_log_path);
     if (!freopen(g_log_path, append ? "ab" : "wb", stderr)) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
     _dup2(_fileno(stderr), _fileno(stdout));
@@ -347,7 +358,6 @@ static void simulate_small_pc(void) {
 }
 
 void plat_init(void) {
-    log_to_file_without_console();
     require_cpu();
     simulate_small_pc();
     _fmode = _O_BINARY;  // fopen/open default to binary (the runtime's "r"/"w" files are binary or LF text)
