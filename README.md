@@ -23,13 +23,15 @@ Early. Measured on the developer's PC (Windows 10, Ryzen, 16 threads, GeForce RT
 
 | What | Result |
 |---|---|
-| Title screen, new game, prologue, Great Sky Island | plays |
-| Frame rate | the game's own 30 fps, with drops while new shaders compile (being fixed: shaders compiled ahead) |
+| Title screen, prologue, Great Sky Island, Hyrule, the Depths | plays |
+| Frame rate | the game's own 30 fps; all shaders are compiled ahead (in the background on the first start, ~3 min), so they cause no hitches |
 | Steam Deck / Linux | not supported yet; a native version is planned and is a high priority |
-| Other PCs and graphics cards | not tested yet |
+| AMD graphics cards | a likely fix for the black screen on Windows is in 0.2.0, not yet confirmed on real AMD hardware |
+| Other PCs and graphics cards | a few player reports so far |
 
-Known issues: hitches the first time an effect or place is seen (shader compilation); the controller layout follows the
-Switch (A is the right face button); no settings menu yet (window size, resolution, upscaling come later).
+Known issues: in the Depths the ground is broken or black in places; some cloth and banners tear (for example at a
+tower); the controller layout follows the Switch (A is the right face button); no settings menu yet (window size,
+resolution, upscaling and 60 fps come later).
 
 ## Choose how to build first
 
@@ -121,7 +123,7 @@ Double-click `setup.bat` and leave its window open. The builder runs these steps
 | `romfs` | 304,000 files are packed into `data\romfs\romfs.bin` | ~4 min |
 | `lift` | Game code from the ExeFS is translated to C | ~2 min |
 | `compile` | The game code and port are compiled into `UltraTears.exe` | ~15 min |
-| `shaders` | The shaders are translated for Vulkan | ~5 min |
+| `shaders` | The shaders are translated for Vulkan | ~3 min |
 | `textures` | The textures are converted to BC7/BC1 | ~7 min |
 | `finish` | The launch configuration is written | seconds |
 
@@ -229,9 +231,9 @@ To update a Releases build, extract the new builder package over the old folder 
 `userdata` to preserve saves. For a Git build, run `git pull`, then repeat the same `python tools/setup.py` command and
 options.
 
-> **Steam Deck and Linux are not supported yet.** The Windows build does not work through Proton because its memory
-> access method is incompatible with `winevulkan`. A native Linux and Steam Deck version is planned and is one of the
-> project's high-priority tasks.
+> **Steam Deck and Linux are not supported yet.** Through Proton the Windows build starts, but runs at a few frames
+> per second and closes in Gaming Mode. A native Linux and Steam Deck version is planned and is one of the project's
+> high-priority tasks.
 
 ## If the build stops with an error
 

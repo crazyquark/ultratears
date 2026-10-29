@@ -70,7 +70,7 @@ The steps, what they write and how long they take on an 8-core PC:
 | `romfs` | `data\romfs\romfs.bin` + index: the RomFS folder in one file, read with 16 threads; its content hash is checked against 1.4.3 | ~4 min | the image is missing |
 | `lift` | `data\exefs` (a copy of the code modules), `data\generated` (the game's code as C, ~0.9 GB) | ~2 min | the lifter changed |
 | `compile` | `UltraTears.exe` (~0.4 GB) and `build\` (objects ~1.8 GB, debug symbols); code for x86-64-v3 (AVX2), or x86-64-v2 (SSE4.2) on a CPU without AVX2 | ~15 min (seconds when little changed) | sources changed (ninja) |
-| `shaders` | `data\shaders\translated.pack`: the ~28,700 shaders as SPIR-V in one file (translated in `data\shaders\work`, removed afterwards) | ~5 min | the finder or the translator changed |
+| `shaders` | `data\shaders\translated.pack`: the ~28,700 shaders as SPIR-V in one file (translated in `data\shaders\work`, removed afterwards) | ~3 min | the finder or the translator changed |
 | `textures` | `data\textures` (BC7 / BC1 of every ASTC texture, ~7.4 GB) | ~7 min | textures not yet in the cache |
 | `finish` | `ultratears.cfg`, `UltraTears (debug).bat` | seconds | always |
 
@@ -114,11 +114,13 @@ python tools/build_xlate.py
 git tag v<version>
 python tools/setup.py
 python tools/make_package.py
-python tools/public_tree.py --publish
+git push origin dev:main
+git push origin v<version>
 ```
 
-The version has one source, the tag `v<x.y.z>` on the release commit (`tools/version.py`): the package, the public
-commit and the exe take it from there. The exe writes it as the first line of its log and shows it in the file's
+Releases are made from `dev`: `main` is moved to the release commit, so its README matches the package. The version
+has one source, the tag `v<x.y.z>` on the release commit (`tools/version.py`): the package and the exe take it from
+there. The exe writes it as the first line of its log and shows it in the file's
 properties; between releases it reads like `0.1.0-3-gabc1234` (`git describe`).
 
 It needs a complete build in the output folder (`dist\` by default; built elsewhere with `tools/setup.py --output
