@@ -23,6 +23,7 @@
 #include "vkb.h"
 #include "vkb_shader.h"
 #include "vkb_spv.h"
+#include "vkb_shpack.h"
 #include "vkb_shbin.h"
 
 #define VLOG(...) LOG("[vk] " __VA_ARGS__)
@@ -130,10 +131,21 @@ static void sha256_hex(const void *a, size_t na, const void *b, size_t nb, char 
     out[64] = 0;
 }
 
+// The translated shaders: data/shaders/translated.pack (vkb_shpack.c); without it, a folder of <key>.res.json + <key>.spv
+// (TOTK_SHADER_DIR, development: the translator's output before it is packed).
 static const char *cache_dir(void) {
     static const char *d;
-    if (!d) { d = getenv("TOTK_SHADER_DIR"); if (!d) d = "data/shaders/ryujinx"; }
+    if (!d) { d = getenv("TOTK_SHADER_DIR"); if (!d) d = vkb_shpack_on() ? "data/shaders/translated.pack" : "data/shaders/translated"; }
     return d;
+}
+static int from_pack(void) {   // a folder only when TOTK_SHADER_DIR names one that is there (an older ultratears.cfg may name a removed one)
+    static int v = -1;
+    if (v < 0) {
+        const char *d = getenv("TOTK_SHADER_DIR");
+        DWORD a = d ? GetFileAttributesA(d) : INVALID_FILE_ATTRIBUTES;
+        v = vkb_shpack_on() && !(a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY));
+    }
+    return v;
 }
 
 // The translator declares gl_PerVertex with ClipDistance[8] and CullDistance[1]: 9 > maxCombinedClipAndCullDistances (8)
@@ -280,26 +292,35 @@ static int dref_clamp(void) {
     if (v < 0) { const char *e = getenv("TOTK_VK_DREF_CLAMP"); v = !(e && *e == '0'); }
     return v;
 }
-// Which translation of a shader: its .res.json's last write (seconds) and size, as the compiled binaries are keyed
-// (vkb_shbin_variant.stamp), and the rewrites load_module makes. Taken from _stat64 here and from FindFirstFile in
-// ahead_thread: the same numbers.
-static uint32_t stamp_of(uint64_t mtime_s, uint64_t size) {
-    uint64_t h = (mtime_s * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+// Which translation of a shader, as the compiled binaries are keyed (vkb_shbin_variant.stamp), and the rewrites
+// load_module makes. From the pack: the hash of its .res.json and .spv (tools/pack_shaders.py). From a folder: the
+// .res.json's last write (seconds) and size, taken from _stat64 here and from FindFirstFile in ahead_thread.
+static uint32_t stamp_fold(uint64_t h) {
     if (dref_clamp()) h ^= 0x5BD1E995ull << 32;   // binaries made before the clamp are not used (the halves fold below)
     return (uint32_t)(h ^ h >> 32) | 1;   // never 0
 }
+static uint32_t stamp_of(uint64_t mtime_s, uint64_t size) {
+    return stamp_fold((mtime_s * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full));
+}
+static uint32_t stamp_packed(uint32_t content) { return stamp_fold((uint64_t)content * 0x9E3779B97F4A7C15ull); }
 
 // Reads the reflection into s and rewrites the SPIR-V bindings into the universal layout: *spv_out (malloc) of
 // *bytes. The shader object is made by the caller.
 static int load_module(vkb_shader *s, const char *key, int nvn_stage, uint32_t **spv_out, size_t *bytes) {
-    char path[1024];
-    snprintf(path, sizeof path, "%s/%s.res.json", cache_dir(), key);
-    char *j = read_file(path, NULL);
-    struct _stat64 st;
-    s->stamp = _stat64(path, &st) == 0 ? stamp_of((uint64_t)st.st_mtime, (uint64_t)st.st_size) : 0;
-    snprintf(path, sizeof path, "%s/%s.spv", cache_dir(), key);
+    char *j = NULL;
+    uint32_t *spv = NULL, content;
     size_t nspv = 0;
-    uint32_t *spv = (uint32_t *)read_file(path, &nspv);
+    if (from_pack()) {
+        s->stamp = vkb_shpack_get(key, &j, &spv, &nspv, &content) ? stamp_packed(content) : 0;
+    } else {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%s.res.json", cache_dir(), key);
+        j = read_file(path, NULL);
+        struct _stat64 st;
+        s->stamp = _stat64(path, &st) == 0 ? stamp_of((uint64_t)st.st_mtime, (uint64_t)st.st_size) : 0;
+        snprintf(path, sizeof path, "%s/%s.spv", cache_dir(), key);
+        spv = (uint32_t *)read_file(path, &nspv);
+    }
     if (!j || !spv || nspv < 20 || (nspv & 3) || spv[0] != 0x07230203) { free(j); free(spv); return 0; }
     s->stage = nvn_stage;
     uint32_t base = nvn_stage == 1 ? VKB_STAGE_BINDINGS : 0;
@@ -615,10 +636,48 @@ static int stage_of(const char *json) {   // "stage": "vs" / "ps" / "cs" -> NVN 
     if (!p || !(p = strchr(p + 7, '"'))) return -1;
     return !strncmp(p, "\"vs\"", 4) ? 0 : !strncmp(p, "\"ps\"", 4) ? 1 : !strncmp(p, "\"cs\"", 4) ? 5 : -1;
 }
+// The pass over the pack (ahead_thread below: over a folder).
+static void ahead_pack(void) {
+    uint64_t t0 = runtime_now_ns();
+    size_t n = vkb_shpack_count();
+    for (size_t i = 0; i < n; i++) {
+        char key[65];
+        uint32_t content;
+        vkb_shpack_key(i, key, &content);
+        atomic_fetch_add(&g_ahead_total, 1);
+        vkb_shbin_variant v0 = {{0}, stamp_packed(content)};
+        vkb_shbin_mark(key, v0.stamp);
+        if (vkb_shbin_has(key, &v0)) { atomic_fetch_add(&g_ahead_done, 1); continue; }
+        char *j;
+        uint32_t *raw;
+        size_t nraw;
+        int stage = vkb_shpack_get(key, &j, &raw, &nraw, &content) ? stage_of(j) : -1;
+        if (stage >= 0) { free(j); free(raw); }
+        if (stage < 0) continue;
+        vkb_shader tmp;
+        memset(&tmp, 0, sizeof tmp);
+        uint32_t *spv;
+        size_t bytes;
+        VkShaderEXT obj;
+        if (load_module(&tmp, key, stage, &spv, &bytes)) {
+            if (!vkb_shbin_has(key, &v0) && make_object(key, &v0, tmp.vk_stage, spv, bytes, &obj) == VK_SUCCESS) {
+                vk.vkDestroyShaderEXT(vkc.device, obj, NULL);   // only its binary was wanted; no command ever saw it
+                atomic_fetch_sub(&g_obj_live, 1);
+                atomic_fetch_add(&g_ahead_made, 1);
+            }
+            free(spv);
+        }
+        atomic_fetch_add(&g_ahead_done, 1);
+    }
+    VLOG("shaders compiled ahead: %llu new of %llu, %.0f s", (unsigned long long)g_ahead_made, (unsigned long long)g_ahead_total,
+         (runtime_now_ns() - t0) / 1e9);
+    vkb_shbin_compact();
+}
 static void *ahead_thread(void *unused) {
     (void)unused;
     pthread_setname_np("totk-shader-ahead");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    if (from_pack()) { ahead_pack(); return NULL; }
     char pattern[1024];
     snprintf(pattern, sizeof pattern, "%s/*.res.json", cache_dir());
     WIN32_FIND_DATAA fd;

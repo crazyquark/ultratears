@@ -246,6 +246,8 @@ def build_from_checkout(a):
            '--dump', str(choose_dump(home, a.dump))]
     if a.only:
         cmd += ['--only', a.only]
+    if a.keep_shader_work:
+        cmd += ['--keep-shader-work']
     return subprocess.run(cmd, cwd=home, env=dict(os.environ, PYTHONNOUSERSITE='1')).returncode
 
 
@@ -365,18 +367,47 @@ def step_compile(dump, state, cpus):
     return 'UltraTears.exe'
 
 
+# The game reads the translated shaders from one file, data/shaders/translated.pack (issue #22: ~57,000 files before).
+# They are found in the RomFS and translated in data/shaders/work (code taken out of the game, the translator's jobs and
+# output: ~143,000 files), packed, and the work folder is removed (--keep-shader-work keeps it, for development).
+# A pack from the same export and translator is up to date; an install from before the pack (data/shaders/ryujinx and
+# its neighbours) is packed as it is, without translating again.
+KEEP_SHADER_WORK = False
+SHADER_OLD = ['raw', 'ryujinx', 'ryujinx-code', 'jobs.jsonl', 'shaders.tsv', 'ryujinx-results.tsv', 'ryujinx-results-new.tsv']
+
+
 def step_shaders(dump, state, cpus):
     out = DATA / 'shaders'
-    stamp = tree_hash([ROOT / 'tools/shaders/inventory.py', ROOT / 'tools/export_shaders.py'])
-    if state.get('shaders-export') != stamp or not (out / 'jobs.jsonl').is_file():
-        run([sys.executable, 'tools/export_shaders.py', DATA / 'romfs', out, DATA / 'exefs'], 'finding the shaders')
-        state['shaders-export'] = stamp
-        save_state(state)
+    pack = out / 'translated.pack'
+    export = tree_hash([ROOT / 'tools/shaders/inventory.py', ROOT / 'tools/export_shaders.py'])
     xlate = sha256(toolchain.XLATE)[:16]
-    new_only = ['--new-only'] if state.get('shaders-xlate') == xlate else []
-    run([sys.executable, 'tools/run_ryujinx_xlate.py', out, '--workers', min(cpus, 32), '--quiet'] + new_only,
-        'translating the shaders')
-    state['shaders-xlate'] = xlate
+    if state.get('shaders-pack') == f'{export}/{xlate}' and pack.is_file():
+        return 'up to date'
+    old = out / 'ryujinx'
+    if old.is_dir() and state.get('shaders-xlate') == xlate and not (out / 'work').exists():
+        run([sys.executable, 'tools/pack_shaders.py', old, pack], 'packing the shaders')
+    else:
+        work = out / 'work'
+        if state.get('shaders-export') != export or not (work / 'jobs.jsonl').is_file():
+            run([sys.executable, 'tools/export_shaders.py', DATA / 'romfs', work, DATA / 'exefs'], 'finding the shaders')
+            state['shaders-export'] = export
+            save_state(state)
+        new_only = ['--new-only'] if state.get('shaders-xlate') == xlate else []
+        run([sys.executable, 'tools/run_ryujinx_xlate.py', work, '--workers', min(cpus, 32), '--quiet'] + new_only,
+            'translating the shaders')
+        state['shaders-xlate'] = xlate
+        save_state(state)
+        run([sys.executable, 'tools/pack_shaders.py', work / 'translated', pack], 'packing the shaders')
+        if not KEEP_SHADER_WORK:
+            shutil.rmtree(work)
+    for name in SHADER_OLD:   # the layout from before the pack
+        p = out / name
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.is_file():
+            p.unlink()
+    state['shaders-export'] = export
+    state['shaders-pack'] = f'{export}/{xlate}'
     return 'done'
 
 
@@ -389,7 +420,7 @@ def step_textures(dump, state, cpus):
 def step_finish(dump, state, cpus):
     fonts = dump / 'sysdata/fonts'
     lines = ['# Written by tools/setup.py: where UltraTears finds its data (relative to this folder).',
-             'exefs=data/exefs', 'romfs=data/romfs', 'shaders=data/shaders/ryujinx', 'compiled=data/shaders/compiled.bin',
+             'exefs=data/exefs', 'romfs=data/romfs', 'shaderpack=data/shaders/translated.pack', 'compiled=data/shaders/compiled.bin',
              'textures=data/textures',
              'saves=userdata']
     if fonts.is_dir() and list(fonts.glob('*.bfttf')):
@@ -422,8 +453,11 @@ def main():
     ap.add_argument('--cpus', type=int, default=os.cpu_count() or 4,
                     help='logical CPUs the build may use (default: all; it runs at low priority)')
     ap.add_argument('--only', choices=[s for s, _ in STEPS], help='run one step only')
+    ap.add_argument('--keep-shader-work', action='store_true', help='keep data/shaders/work after packing (development)')
     ap.add_argument('--in-place', action='store_true', help=argparse.SUPPRESS)
     a = ap.parse_args()
+    global KEEP_SHADER_WORK
+    KEEP_SHADER_WORK = a.keep_shader_work
     if is_checkout() and not a.in_place:
         sys.exit(build_from_checkout(a))
     if a.output:
