@@ -18,6 +18,7 @@ Refuses a dirty working tree: the package must be the commit it names.
 """
 import argparse
 import io
+import json
 import os
 import pathlib
 import re
@@ -30,6 +31,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 from toolchain import CLANG64, env as tool_env  # noqa: E402
+import deps_install  # noqa: E402
 import public_tree  # noqa: E402
 import version  # noqa: E402
 
@@ -221,6 +223,12 @@ def main():
     copy_python(a.python, py)
     (out / 'deps/shaders').mkdir(parents=True)
     shutil.copy2(xlate, out / 'deps/shaders/ultrs-shaders.exe')
+    stamp = xlate.parent / 'source.txt'   # the translator must be made from this commit's sources
+    if not stamp.is_file() or stamp.read_text().strip() != deps_install.xlate_stamp(ROOT):
+        sys.exit(f'{xlate} was not built from this source: run tools/build_xlate.py again')
+    shutil.copy2(stamp, out / 'deps/shaders/source.txt')
+    # the package's own tools: a build from it installs nothing (tools/deps_install.py)
+    (out / 'deps/installed.json').write_text(json.dumps({'python': 'package', 'clang64': 'package'}, indent=1))
     shutil.copy2(ROOT / 'third_party/maxwell_shader/LICENSE.txt', lic / 'Ryujinx.txt')
     shutil.copy2(a.python / 'LICENSE.txt', lic / 'Python.txt')
     (out / 'setup.bat').write_text(SETUP_BAT.replace('\n', '\r\n'))

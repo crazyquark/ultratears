@@ -1,7 +1,8 @@
 """Build UltraTears from the player's own dump, in one command: every step is checked and can be resumed.
 
-From a Git checkout the build goes to dist\\, or to --output <folder>. The tracked source files are copied there and
-missing build tools are downloaded from the latest GitHub builder release. In a builder package setup runs in place.
+From a Git checkout the build goes to dist\\, or to --output <folder>: the tracked source files are copied there. In a
+builder package or a source folder without Git setup runs in place. Build tools this PC lacks are downloaded into
+deps\\ from where they are published (tools/deps_install.py, pinned in tools/deps.json); a builder package has them.
 usage: python tools/setup.py [--output <build folder>] [--dump <folder with exefs\\ and romfs\\>] [--cpus N]
 The dump is game\\ in the checkout/build folder unless --dump names another (remembered for later runs); run it again
 to resume, or to rebuild what changed after an update of the port.
@@ -29,11 +30,10 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
-import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+import deps_install  # noqa: E402
 import toolchain  # noqa: E402
 import public_tree  # noqa: E402
 import version  # noqa: E402
@@ -50,7 +50,6 @@ ROMFS_FILES = 304243
 ROMFS_BYTES = 17026725026
 ROMFS_CONTENT = 'b2a2e966a06158e098c03e564f77fd72809bc57275f04eb0725bcde14d522056'
 ENCRYPTED = ('.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz')
-GITHUB_RELEASES = 'https://api.github.com/repos/kuraeow/ultratears/releases?per_page=20'
 KEEP = {'game', 'data', 'build', 'userdata', 'diag', 'deps', 'dist', 'dev-local'}
 # Starts the game with the statistics lines in ultratears.log (UltraTears.exe --debug): what a player runs when asked
 # for a performance log.
@@ -120,96 +119,14 @@ def sync_source(home):
     return changed, removed
 
 
-def deps_ready(home):
-    py = home / 'deps/python/python.exe'
-    programs = (py, home / 'deps/clang64/bin/clang.exe', home / 'deps/clang64/bin/clang++.exe',
-                home / 'deps/clang64/bin/lld.exe', home / 'deps/clang64/bin/ninja.exe',
-                home / 'deps/shaders/ultrs-shaders.exe')
-    if not all(p.is_file() for p in programs):
-        return False
-    packages = subprocess.run([str(py), '-c', 'import lz4, capstone, unicorn'], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, env=dict(os.environ, PYTHONNOUSERSITE='1'))
-    return packages.returncode == 0
-
-
-def builder_asset():
-    request = urllib.request.Request(GITHUB_RELEASES, headers={'Accept': 'application/vnd.github+json',
-                                                               'User-Agent': 'UltraTears-setup'})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            releases = json.load(response)
-    except Exception as e:
-        raise Fail(f'could not query GitHub releases for the build tools: {e}') from e
-    for release in releases:
-        for asset in release.get('assets', []):
-            name = asset.get('name', '')
-            if name.startswith('UltraTears-builder-') and name.endswith('-windows-x86_64.zip'):
-                return name, asset['browser_download_url']
-    raise Fail('no UltraTears builder package was found in the GitHub releases')
-
-
-def download(url, path):
-    request = urllib.request.Request(url, headers={'User-Agent': 'UltraTears-setup'})
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response, open(path, 'wb') as out:
-            total = int(response.headers.get('Content-Length', 0))
-            done, shown = 0, -1
-            while True:
-                block = response.read(1 << 20)
-                if not block:
-                    break
-                out.write(block)
-                done += len(block)
-                mark = done // (64 << 20)
-                if mark != shown:
-                    shown = mark
-                    suffix = f' / {total / 2**20:.0f} MiB' if total else ''
-                    say(f'  downloading tools: {done / 2**20:.0f} MiB{suffix}')
-    except Exception as e:
-        path.unlink(missing_ok=True)
-        raise Fail(f'could not download the build tools: {e}') from e
-
-
-def install_deps(home):
-    if deps_ready(home):
-        return
-    name, url = builder_asset()
-    cache = ROOT / 'dev-local/downloads'
-    cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / name
-    if not archive.is_file():
-        say(f'Build tools are missing; downloading {name} once.')
-        partial = archive.with_suffix(archive.suffix + '.part')
-        download(url, partial)
-        partial.replace(archive)
-    say(f'  installing tools in {home / "deps"}')
-    try:
-        with zipfile.ZipFile(archive) as zf:
-            for info in zf.infolist():
-                parts = pathlib.PurePosixPath(info.filename).parts
-                indexes = [i for i, p in enumerate(parts) if p in ('deps', 'licenses')]
-                if not indexes:
-                    continue
-                rel = pathlib.Path(*parts[indexes[0]:])
-                if '..' in rel.parts:
-                    raise Fail(f'unsafe path in the builder archive: {info.filename}')
-                dst = home / rel
-                if info.is_dir():
-                    dst.mkdir(parents=True, exist_ok=True)
-                else:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        with zf.open(info) as src, open(dst, 'wb') as out:
-                            shutil.copyfileobj(src, out)
-                    except PermissionError:
-                        # An in-place repair may be running with deps/python/python.exe, whose EXE/DLLs Windows locks.
-                        if not dst.is_file():
-                            raise
-    except (OSError, zipfile.BadZipFile) as e:
-        archive.unlink(missing_ok=True)
-        raise Fail(f'could not unpack the build tools: {e}') from e
-    if not deps_ready(home):
-        raise Fail(f'{name} did not contain all required build tools')
+def own_python(home):
+    """The Python the build runs on (3.14 with lz4, capstone, unicorn): this PC's when it will do, else installed into
+    home\\deps\\python first."""
+    py = deps_install.python_for(home)
+    if py is None:
+        deps_install.install_python(home)
+        py = deps_install.python_for(home)
+    return py
 
 
 def choose_dump(home, requested):
@@ -232,17 +149,11 @@ def build_from_checkout(a):
     try:
         changed, removed = sync_source(home)
         say(f'UltraTears source -> {home}: {changed} files updated, {removed} removed')
-        install_deps(home)
-        local_xlate = ROOT / 'dev-local/build/shaders/ultrs-shaders.exe'
-        target_xlate = home / 'deps/shaders/ultrs-shaders.exe'
-        if local_xlate.is_file() and not filecmp.cmp(local_xlate, target_xlate, shallow=False):
-            target_xlate.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_xlate, target_xlate)
-            say('  installed the locally built shader translator')
-    except Fail as e:
+        py = own_python(home)
+    except (Fail, deps_install.DepsError) as e:
         say(f'\nERROR preparing the build folder: {e}')
         return 1
-    cmd = [str(home / 'deps/python/python.exe'), str(home / 'tools/setup.py'), '--in-place', '--cpus', str(a.cpus),
+    cmd = [str(py), str(home / 'tools/setup.py'), '--in-place', '--cpus', str(a.cpus),
            '--dump', str(choose_dump(home, a.dump))]
     if a.only:
         cmd += ['--only', a.only]
@@ -299,8 +210,7 @@ def step_check(dump, state):
                        'setup again to reinstall the build tools')
     toolchain.env()
     if toolchain.XLATE is None:
-        raise Fail('the shader translator ultrs-shaders.exe is missing: build it with python tools/build_xlate.py '
-                   '(needs the .NET 10 SDK) or take deps\\shaders from the builder package')
+        raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
     if packed(state) and all(ok_module(DATA / 'exefs' / n, h) for n, h in EXEFS.items()):
         return 'Tears of the Kingdom 1.4.3, already taken in (data\\exefs, data\\romfs): the dump is no longer needed'
     if not dump.is_dir():
@@ -463,20 +373,23 @@ def main():
         sys.exit(build_from_checkout(a))
     if a.output:
         ap.error('--output is used only when setup.py is run from a Git checkout')
-    if not deps_ready(ROOT):
-        try:
-            install_deps(ROOT)
-        except Fail as e:
-            say(f'\nERROR preparing the build tools: {e}')
-            sys.exit(1)
-        importlib.reload(toolchain)
-    # The build runs on the builder's own Python (deps\python: the right version, lz4 / capstone / unicorn included),
-    # whichever Python started this: a source folder without Git (GitHub's Download ZIP) went on with the player's
-    # own, which may lack those packages or be a version they do not install on (pip then needs a C++ compiler).
-    own = ROOT / 'deps/python/python.exe'
-    if pathlib.Path(sys.executable).resolve() != own.resolve() and not os.environ.get('ULTRATEARS_SETUP_OWN_PYTHON'):
+    # The build runs on a Python 3.14 with the build's packages (deps_install.python_for), whichever Python started
+    # setup: a source folder without Git (GitHub's Download ZIP) went on with the player's own, which may lack them or
+    # be a version they do not install on. Then the rest of the tools, installed when this PC lacks them.
+    try:
+        py = own_python(ROOT)
+    except deps_install.DepsError as e:
+        say(f'\nERROR preparing the build tools: {e}')
+        sys.exit(1)
+    if pathlib.Path(sys.executable).resolve() != py.resolve() and not os.environ.get('ULTRATEARS_SETUP_OWN_PYTHON'):
         env = dict(os.environ, PYTHONNOUSERSITE='1', ULTRATEARS_SETUP_OWN_PYTHON='1')
-        sys.exit(subprocess.run([str(own), str(ROOT / 'tools/setup.py')] + sys.argv[1:], cwd=ROOT, env=env).returncode)
+        sys.exit(subprocess.run([str(py), str(ROOT / 'tools/setup.py')] + sys.argv[1:], cwd=ROOT, env=env).returncode)
+    try:
+        deps_install.ensure_tools(ROOT)
+    except deps_install.DepsError as e:
+        say(f'\nERROR preparing the build tools: {e}')
+        sys.exit(1)
+    importlib.reload(toolchain)
     state = load_state()
     if a.dump:
         state['dump'] = str(a.dump.resolve())

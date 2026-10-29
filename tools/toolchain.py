@@ -1,20 +1,21 @@
-"""Where the build's tools are: the builder package's deps/ first, then the developer's own installs.
+"""Where the build's tools are (tools/deps_install.py chooses and installs them).
 
 CLANG64: a folder with clang, clang++, lld, ninja and the static libraries the port links (SDL3, opus, vpx, zstd,
-iconv, libc++): deps/clang64/bin in the builder package (a trimmed MSYS2 CLANG64), else ULTRS_CLANG64, else
-C:/msys64/clang64/bin. XLATE: the shader translator ultrs-shaders.exe (tools/build_xlate.py).
+iconv, libc++): deps/clang64/bin when installed (the builder package's trimmed MSYS2 CLANG64, or the MSYS2 packages a
+source build downloads), else ULTRS_CLANG64, else C:/msys64/clang64/bin. XLATE: the shader translator ultrs-shaders.exe
+(deps/shaders, built from this source when missing or stale; tools/build_xlate.py).
 """
 import os
 import pathlib
+
+import deps_install
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _clang64():
-    for c in (ROOT / 'deps/clang64/bin', os.environ.get('ULTRS_CLANG64'), 'C:/msys64/clang64/bin'):
-        if c and (pathlib.Path(c) / 'clang.exe').is_file():
-            return pathlib.Path(c)
-    return None
+    prefix = deps_install.clang64_for(ROOT)
+    return prefix / 'bin' if prefix else None
 
 
 CLANG64 = _clang64()

@@ -42,7 +42,9 @@ on your PC from your own extracted dump. There are two ways to do that:
 | **Current GitHub source** | Developers and people testing their own changes | Git and any maintained Python 3; the remaining tools download automatically |
 
 Both methods produce the same playable folder. The Releases package already carries every build tool. The source build
-downloads the same tool bundle first, then performs the same game build.
+uses the tools already on your PC and downloads only the missing ones from where they are published (Python from
+python.org, Clang from MSYS2, .NET from Microsoft to build the shader translator from the same source), then performs
+the same game build.
 
 ## Requirements for either method
 
@@ -151,7 +153,8 @@ This **one command performs the entire process**:
 
 1. Creates `dist` inside the repository.
 2. Copies the current tracked source files there.
-3. Downloads missing Python, Clang and the shader translator from the latest builder release.
+3. Installs the build tools this PC lacks into `dist\deps` (Python 3.14, Clang, and the shader translator built from
+   this source); nothing comes from a release.
 4. Finds the dump: first in the output folder's `game`, then in the repository's `game`, then the folder given with
    `--dump` last time for this output folder.
 5. Builds the complete game into `dist`.

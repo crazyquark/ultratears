@@ -20,13 +20,17 @@ tools-only preparation command, so the ExeFS and RomFS must already be available
 | Tool | Version used | Notes |
 |---|---|---|
 | Windows 10/11 x64 | | |
-| Python | Any maintained Python 3 to start `tools/setup.py`; its local Python 3.14 is downloaded automatically | The build uses the downloaded Python with `lz4`, `capstone` and `unicorn` |
-| Build tools | downloaded automatically | Python 3.14, the trimmed MSYS2 CLANG64 toolchain and `ultrs-shaders.exe` are taken from the latest builder release |
+| Python | Any maintained Python 3 to start `tools/setup.py` | The build runs on Python 3.14 with `lz4`, `capstone` and `unicorn`: the one that started setup when it has them, else python.org's 3.14.5 with the wheels from PyPI in `deps\python` |
+| Clang, lld, ninja, SDL3, opus, libvpx, zstd | MSYS2 CLANG64, Clang 23.1.3 | `C:\msys64\clang64` (or `ULTRS_CLANG64`) when it has them, else the MSYS2 packages in `deps\clang64` |
+| Shader translator | built from this source | `deps\shaders\ultrs-shaders.exe`, rebuilt whenever its sources change; with the .NET 10 SDK on PATH, else one in `deps\dotnet` |
 | git | | for the clone |
 
-The first run needs network access and downloads the latest builder archive (currently about 150 MiB) once into
-`dev-local\downloads`. Only its tools and licenses are installed in `<output>\deps`; no game files are downloaded.
-Later builds reuse both the cache and the installed tools.
+`tools/deps_install.py` installs what this PC lacks, pinned in `tools/deps.json` (URL, size and hash of every file;
+a download that differs is refused). On a PC with none of them the first run downloads about 450 MiB (Python 15,
+MSYS2 packages 136, .NET SDK 290) and needs network access; nothing comes from an UltraTears release and no game
+files are downloaded. `deps\installed.json` records what was installed: a changed pin reinstalls that part, a
+changed translator source rebuilds the translator. `ULTRS_NO_SYSTEM_TOOLS=1` ignores the tools installed on this PC
+(to test what a clean PC gets).
 
 ## Build
 

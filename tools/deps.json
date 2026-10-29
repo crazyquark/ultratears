@@ -1,0 +1,201 @@
+{
+ "comment": "Build tools of a source build, installed by tools/deps_install.py from where they are published. Change a version here together with its size and hash.",
+ "msys2": [
+  {
+   "name": "mingw-w64-clang-x86_64-clang",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-clang-23.1.3-1-any.pkg.tar.zst",
+   "size": 34232947,
+   "sha256": "1fee2841a761d739b96c7de1ebd08dec55c603b2c11ea47ce19b56161f2b031d"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-clang-libs",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-clang-libs-23.1.3-1-any.pkg.tar.zst",
+   "size": 25039872,
+   "sha256": "3de0accee7d5fc87dad60977f099948d1c59353ae9031365cdf39526bcf0f3d0"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-compiler-rt",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-compiler-rt-23.1.3-1-any.pkg.tar.zst",
+   "size": 814081,
+   "sha256": "3f0926a9b74eee208f0add40f05684ca1766bd44b64137de72c73eac165dc244"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-crt",
+   "version": "14.0.0.r495.g63ebe6cdb-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-crt-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst",
+   "size": 3029170,
+   "sha256": "85a5ad3e1414c1f737d39b04a95800f96380066fa69e0b046e99d10cd5e530e1"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-headers",
+   "version": "14.0.0.r495.g63ebe6cdb-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-headers-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst",
+   "size": 6889704,
+   "sha256": "a84695c0e29b0659506b519f3ba9ebfd35e91641819b2fe9b7f453393c9adc87"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libc++",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libc++-23.1.3-1-any.pkg.tar.zst",
+   "size": 1963078,
+   "sha256": "df3744b6bb6a39472d29424e0d45f573e750ee86058100b6d227e5294b98da39"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libunwind",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libunwind-23.1.3-1-any.pkg.tar.zst",
+   "size": 63334,
+   "sha256": "6dc583bd260a65e36ac7fe3bcf6669848032ed5edf4308591a338a3c02c88241"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libwinpthread",
+   "version": "14.0.0.r495.g63ebe6cdb-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libwinpthread-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst",
+   "size": 32422,
+   "sha256": "7c9e978aeb767af1555667d99e232d1149d60e42d1b6e890f73b2d87101fa483"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-winpthreads",
+   "version": "14.0.0.r495.g63ebe6cdb-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-winpthreads-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst",
+   "size": 44315,
+   "sha256": "3cbb449d4c13f2fc387976e6bc86756c31a3dd811ddd73b5d429d0b707d9dd03"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-lld",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-lld-23.1.3-1-any.pkg.tar.zst",
+   "size": 3628208,
+   "sha256": "dfbaf81be26c354348f5b372665077c75f3c0f54b9e9b8e5b8e769752507b23c"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-llvm-libs",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-llvm-libs-23.1.3-1-any.pkg.tar.zst",
+   "size": 34502244,
+   "sha256": "5711b4b57e69fb55afcc93c873d8dea72d997489fb273b1f88df800638eaa5f9"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-llvm-tools",
+   "version": "23.1.3-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-llvm-tools-23.1.3-1-any.pkg.tar.zst",
+   "size": 23348660,
+   "sha256": "be6386e7d28fdea73fdc03f5627183f06486052e1d51e01f2a411f6d0870233c"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-ninja",
+   "version": "1.13.2-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-ninja-1.13.2-1-any.pkg.tar.zst",
+   "size": 194994,
+   "sha256": "dbb68154241fc24df9c176f605712f6f2491226f8c495627e95201c149a49a65"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-sdl3",
+   "version": "3.4.18-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-sdl3-3.4.18-1-any.pkg.tar.zst",
+   "size": 2183553,
+   "sha256": "26847e18a9f413a1ebec5a2359881ceeef810558c63235ca0997a353c868035b"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-opus",
+   "version": "1.6.1-2",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-opus-1.6.1-2-any.pkg.tar.zst",
+   "size": 387943,
+   "sha256": "2f334ee8a4752842231fb1e42335bbb353192f03b41c8a78e5a37c59cded4867"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libvpx",
+   "version": "1.17.0-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libvpx-1.17.0-1-any.pkg.tar.zst",
+   "size": 1350051,
+   "sha256": "c03c249976710057699dd124fa27f4668df87029b06f73487555f47a4353486a"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-zstd",
+   "version": "1.5.7-2",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-zstd-1.5.7-2-any.pkg.tar.zst",
+   "size": 597342,
+   "sha256": "2d75c4ddf8f4f7b76fe33e3f1eea16450f9b3aede14285c886462d72f0ffd87d"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libiconv",
+   "version": "1.19-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libiconv-1.19-1-any.pkg.tar.zst",
+   "size": 736821,
+   "sha256": "26c4ac9f2023eecdfffb291cab40c60585a0cd0f72539ca03c5558f3ecd309ec"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-zlib",
+   "version": "1.3.2-2",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-zlib-1.3.2-2-any.pkg.tar.zst",
+   "size": 111651,
+   "sha256": "96d8db2f2bf24c0d4e82b899d50a3497d97536a8bd38ce275401d0f2b9580b5e"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-xz",
+   "version": "5.8.4-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-xz-5.8.4-1-any.pkg.tar.zst",
+   "size": 913351,
+   "sha256": "6fc8efc101a0a638f7d637731b24cc2989f479a0a41d76a6723fd82ae3bffac9"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libffi",
+   "version": "3.8.0-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libffi-3.8.0-1-any.pkg.tar.zst",
+   "size": 51575,
+   "sha256": "4d27339b52eabae86a1dff79cf432191ad8dd6acfa653b1179b12490234c66a6"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-libxml2",
+   "version": "2.15.4-2",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-libxml2-2.15.4-2-any.pkg.tar.zst",
+   "size": 1012502,
+   "sha256": "926f5cf56128d96580ea2e86759fa3ecaf76a8b852b91ef20878b516b81e3a0e"
+  },
+  {
+   "name": "mingw-w64-clang-x86_64-vulkan-headers",
+   "version": "1~1.4.363.0-1",
+   "url": "https://repo.msys2.org/mingw/clang64/mingw-w64-clang-x86_64-vulkan-headers-1~1.4.363.0-1-any.pkg.tar.zst",
+   "size": 1799074,
+   "sha256": "7eabb1efd99c5bd80d2a2b3b5f9ef76afee32f096a175e0e4d0f86793fcb7247"
+  }
+ ],
+ "python": {
+  "version": "3.14.5",
+  "url": "https://api.nuget.org/v3-flatcontainer/python/3.14.5/python.3.14.5.nupkg",
+  "size": 15016460,
+  "sha256": "03ad5810986afd8273a34a28c15cb594300ba7f4749f24362d69206fa1b6ac15"
+ },
+ "wheels": [
+  {
+   "name": "lz4",
+   "version": "4.4.5",
+   "url": "https://files.pythonhosted.org/packages/18/2c/8332080fd293f8337779a440b3a143f85e374311705d243439a3349b81ad/lz4-4.4.5-cp314-cp314-win_amd64.whl",
+   "size": 101497,
+   "sha256": "92159782a4502858a21e0079d77cdcaade23e8a5d252ddf46b0652604300d7be"
+  },
+  {
+   "name": "capstone",
+   "version": "5.0.7",
+   "url": "https://files.pythonhosted.org/packages/70/39/2138d890a8e827636b9de9924fbc8527fe83e38b6d26605b30ac55e30ebe/capstone-5.0.7-py3-none-win_amd64.whl",
+   "size": 1272204,
+   "sha256": "4ab8bcb7da8f221ff45926ca168ca33e76f7237d06fbf3c10780002faa2670e1"
+  },
+  {
+   "name": "unicorn",
+   "version": "2.1.4",
+   "url": "https://files.pythonhosted.org/packages/70/3d/de7be9bd1addabe6d8a1369381f8a080400c349850e978689c5e18287957/unicorn-2.1.4-cp37-abi3-win_amd64.whl",
+   "size": 15943079,
+   "sha256": "d7107500c64ce5c168fbff6bef9485b5db1350050036f4cea568650cf8bdbdf5"
+  }
+ ],
+ "dotnet": {
+  "version": "10.0.402",
+  "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.402/dotnet-sdk-10.0.402-win-x64.zip",
+  "sha512": "ae4fd528cb7e9f6af6aaf7de36715a69f761f183744f1bb3025d19f5a92447090ec561410e46266c1d10a63781ed6f3de771760bc76c876d87daabc367b898cd",
+  "size": 300755826
+ }
+}
