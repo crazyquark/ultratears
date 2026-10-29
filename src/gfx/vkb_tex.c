@@ -676,9 +676,10 @@ typedef struct { const uint8_t *src; uint8_t *dst; uint32_t w, h, bw, bh, first;
 static astc_item *g_ai;
 static int g_nai, g_capai;
 static uint32_t g_apieces;                  // pieces of all items
-static _Atomic uint32_t g_anext, g_adone;   // the next piece to take / pieces decoded
+static _Atomic uint32_t g_anext;            // the next piece to take
 static uint64_t g_aj_serial;
-static int g_aj_open, g_aj_active;          // a batch is being decoded / workers in it
+static int g_aj_open, g_aj_active;          // a batch is being worked on / workers in it
+static void (*g_aj_fn)(void);               // the batch's work: pieces until none is left
 static pthread_mutex_t g_aj_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_aj_cv = PTHREAD_COND_INITIALIZER, g_aj_done_cv = PTHREAD_COND_INITIALIZER;
 uint64_t vkb_astc_ns;                       // decoding time on the recording thread (long submission log)
@@ -700,11 +701,6 @@ static void astc_work(void) {   // pieces until none is left
         const astc_item *it = &g_ai[k];
         uint32_t r = (p - it->first) * ASTC_CHUNK;
         astc_decode_ldr_rows(it->src, it->w, it->h, it->bw, it->bh, it->srgb, it->dst, r, r + ASTC_CHUNK);
-        if (atomic_fetch_add(&g_adone, 1) + 1 == g_apieces) {
-            pthread_mutex_lock(&g_aj_mu);
-            pthread_cond_broadcast(&g_aj_done_cv);
-            pthread_mutex_unlock(&g_aj_mu);
-        }
     }
 }
 static void *astc_worker(void *unused) {
@@ -716,10 +712,11 @@ static void *astc_worker(void *unused) {
         while (g_aj_serial == seen) pthread_cond_wait(&g_aj_cv, &g_aj_mu);
         seen = g_aj_serial;
         int open = g_aj_open;
+        void (*fn)(void) = g_aj_fn;
         if (open) g_aj_active++;
         pthread_mutex_unlock(&g_aj_mu);
         if (!open) continue;
-        astc_work();
+        fn();
         pthread_mutex_lock(&g_aj_mu);
         g_aj_active--;
         pthread_cond_broadcast(&g_aj_done_cv);
@@ -733,27 +730,32 @@ static void astc_start(void) {
         if (pthread_create(&t, NULL, astc_worker, NULL) == 0) pthread_detach(t);
     }
 }
-static void astc_run(void) {   // the gathered items, decoded; then the batch is empty
-    if (!g_nai) return;
-    uint64_t t0 = runtime_now_ns();
-    atomic_store(&g_anext, 0); atomic_store(&g_adone, 0);
-    if (g_apieces > 2) {
+// fn on the workers and the calling thread until it has no piece left; returns when every worker that took part is
+// done (one batch at a time: uploads hold g_up_mu or run on the one recording thread)
+static void pool_run(void (*fn)(void), int wide) {
+    if (wide) {
         static pthread_once_t once = PTHREAD_ONCE_INIT;
         pthread_once(&once, astc_start);
         pthread_mutex_lock(&g_aj_mu);
+        g_aj_fn = fn;
         g_aj_open = 1;
         g_aj_serial++;
         pthread_cond_broadcast(&g_aj_cv);
         pthread_mutex_unlock(&g_aj_mu);
     }
-    astc_work();
-    if (g_apieces > 2) {
+    fn();
+    if (wide) {
         pthread_mutex_lock(&g_aj_mu);
-        while (atomic_load(&g_adone) < g_apieces) pthread_cond_wait(&g_aj_done_cv, &g_aj_mu);
         g_aj_open = 0;   // a worker that wakes late takes nothing
         while (g_aj_active) pthread_cond_wait(&g_aj_done_cv, &g_aj_mu);
         pthread_mutex_unlock(&g_aj_mu);
     }
+}
+static void astc_run(void) {   // the gathered items, decoded; then the batch is empty
+    if (!g_nai) return;
+    uint64_t t0 = runtime_now_ns();
+    atomic_store(&g_anext, 0);
+    pool_run(astc_work, g_apieces > 2);
     g_nai = 0; g_apieces = 0;
     vkb_astc_ns += runtime_now_ns() - t0;
 }
@@ -816,8 +818,37 @@ static int to_bc7(vkb_image *im, int srgb, int fmt) {
     im->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return 1;
 }
-typedef struct { const uint8_t *rows; uint8_t *rgba; vkb_bc7_key k; uint32_t level, layer, lw, lh, ld; int have, fmt; VkDeviceSize slice; } surf_t;
+typedef struct {
+    const uint8_t *rows; uint8_t *at, *rgba, *blocks; vkb_bc7_key k; uint32_t level, layer, lw, lh, ld; int have, fmt;
+    VkDeviceSize slice, bytes, off; VkBuffer buf; size_t n;
+} surf_t;
 static uint64_t g_bc7_images;   // images made BC7 (the log line)
+// The surfaces of an ASTC texture are prepared on the decoding workers too: a big array texture has hundreds to over a
+// thousand (121 layers of 11 levels), each laid out, hashed for the key and looked up - 16 -> 10 ms for a 40.6 MiB
+// array (2026-10-29). Same buffers as before: no memory of its own. The copies of the cached blocks stay on this thread:
+// on the workers they took longer (20-73 ms against 33). Most of what is left of such an upload is fresh upload memory:
+// the ring grows by a chunk of its size, which the driver clears (up to 77 ms) or the copy faults in, every time - the
+// chunks past RING_BASE go back after ~4 s (plan.md).
+static struct { const nvn_texdesc *d; const uint8_t *src; surf_t *sf; uint32_t ns; int bw, bh, srgb; } g_sj;
+static _Atomic uint32_t g_snext;
+static void surf_work(void) {
+    for (;;) {
+        uint32_t i = atomic_fetch_add(&g_snext, 1);
+        if (i >= g_sj.ns) return;
+        surf_t *s = &g_sj.sf[i];
+        uint32_t pitch = (s->lw + (uint32_t)g_sj.bw - 1) / (uint32_t)g_sj.bw * 16;
+        if (nvn_deswizzle(g_sj.d, s->level, s->layer, g_sj.src, s->at, pitch)) continue;
+        s->rows = s->at;
+        s->k = vkb_bc7_key_of(s->rows, (size_t)s->bytes, s->lw, s->lh, s->ld, (uint32_t)g_sj.bw, (uint32_t)g_sj.bh, g_sj.srgb);
+        size_t len;
+        s->have = vkb_bc7_lookup(s->k, &s->fmt, &len) &&
+                  len == (s->fmt == VKB_BC_1 ? bc1_size(s->lw, s->lh, s->ld) : bc7_size(s->lw, s->lh, s->ld));
+    }
+}
+static void surf_run(void) {
+    atomic_store(&g_snext, 0);
+    pool_run(surf_work, g_sj.ns >= 8);
+}
 // The ASTC blocks in rows are for the CPU only (the cache key, a miss decoded): laid out in ordinary memory. They were
 // put in upload memory and read back from it for the key - memory the CPU reads very slowly (uncached, often on the GPU):
 // 25-48 ms for a 240x384 array texture of 60 layers and 9 levels, the hitches in the Depths (2026-10-29).
@@ -840,19 +871,16 @@ static void astc_upload(VkCommandBuffer cb, vkb_image *im, const uint8_t *src, i
         uint32_t bx = (lw + bw - 1) / bw, by = (lh + bh - 1) / bh, pitch = bx * 16;
         VkDeviceSize slice = (VkDeviceSize)pitch * by, bytes = slice * ld;
         for (uint32_t layer = 0; layer < im->layers; layer++, k++) {
-            uint8_t *rows = at;
+            sf[k] = (surf_t){.at = at, .level = level, .layer = layer, .lw = lw, .lh = lh, .ld = ld, .slice = slice, .bytes = bytes};
             at += bytes;
-            surf_t *s = &sf[k];
-            *s = (surf_t){NULL, NULL, {0, 0}, level, layer, lw, lh, ld, 0, 0, slice};
-            if (nvn_deswizzle(d, level, layer, src, rows, pitch)) { all = 0; continue; }
-            s->rows = rows;
-            s->k = vkb_bc7_key_of(rows, (size_t)bytes, lw, lh, ld, (uint32_t)bw, (uint32_t)bh, srgb);
-            size_t len;
-            s->have = vkb_bc7_lookup(s->k, &s->fmt, &len) &&
-                      len == (s->fmt == VKB_BC_1 ? bc1_size(lw, lh, ld) : bc7_size(lw, lh, ld));
-            all &= s->have && (fmt < 0 || s->fmt == fmt);   // one format for the whole image
-            if (s->have && fmt < 0) fmt = s->fmt;
         }
+    }
+    g_sj.d = d; g_sj.src = src; g_sj.sf = sf; g_sj.ns = (uint32_t)ns; g_sj.bw = bw; g_sj.bh = bh; g_sj.srgb = srgb;
+    surf_run();
+    for (int i = 0; i < ns; i++) {
+        surf_t *s = &sf[i];
+        all &= s->rows && s->have && (fmt < 0 || s->fmt == fmt);   // one format for the whole image
+        if (s->rows && s->have && fmt < 0) fmt = s->fmt;
     }
     if (!im->bc7 && all && ns && to_bc7(im, srgb, fmt)) {
         g_bc7_images++;
@@ -875,23 +903,21 @@ static void astc_upload(VkCommandBuffer cb, vkb_image *im, const uint8_t *src, i
         for (int i = 0; i < ns; i++) {
             surf_t *s = &sf[i];
             if (!s->rows) continue;
-            size_t n = bcf == VKB_BC_1 ? bc1_size(s->lw, s->lh, s->ld) : bc7_size(s->lw, s->lh, s->ld);
-            VkBuffer buf;
-            VkDeviceSize off;
-            uint8_t *blocks = vkb_ring_alloc(n, 16, &buf, &off);
-            if (!vkb_bc7_read(s->k, blocks, n)) {
+            s->n = bcf == VKB_BC_1 ? bc1_size(s->lw, s->lh, s->ld) : bc7_size(s->lw, s->lh, s->ld);
+            s->blocks = vkb_ring_alloc(s->n, 16, &s->buf, &s->off);
+            if (!vkb_bc7_read(s->k, s->blocks, s->n)) {
                 VkBuffer rb;
                 VkDeviceSize ro;
                 uint8_t *rgba = vkb_ring_alloc((VkDeviceSize)s->lw * s->lh * 4 * s->ld, 16, &rb, &ro);
                 for (uint32_t z = 0; z < s->ld; z++)
                     astc_add(s->rows + s->slice * z, s->lw, s->lh, (uint32_t)bw, (uint32_t)bh, srgb, rgba + (VkDeviceSize)s->lw * s->lh * 4 * z);
                 astc_run();
-                vkb_bc7_encode_now(s->k, rgba, s->lw, s->lh, s->ld, srgb, bcf, blocks);
+                vkb_bc7_encode_now(s->k, rgba, s->lw, s->lh, s->ld, srgb, bcf, s->blocks);
             }
-            VkBufferImageCopy r = {.bufferOffset = off, .bufferRowLength = (s->lw + 3) / 4 * 4, .bufferImageHeight = (s->lh + 3) / 4 * 4,
+            VkBufferImageCopy r = {.bufferOffset = s->off, .bufferRowLength = (s->lw + 3) / 4 * 4, .bufferImageHeight = (s->lh + 3) / 4 * 4,
                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, s->level, s->layer, 1}, .imageExtent = {s->lw, s->lh, s->ld}};
             vkb_checkpoint("upload texture (BC7)", NULL, NULL);
-            vk.vkCmdCopyBufferToImage(cb, buf, im->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+            vk.vkCmdCopyBufferToImage(cb, s->buf, im->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
         }
     } else {   // decoded to RGBA8 (all surfaces together), then queued for encoding
         for (int i = 0; i < ns; i++) {
