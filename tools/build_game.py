@@ -184,15 +184,21 @@ def main():
     sys.exit(run_limited(ninja, env, (1 << a.cpus) - 1))
 
 
-def run_limited(cmd, env, mask):
+def run_limited(cmd, env, mask, on_line=None):
+    """cmd at below-normal priority on the CPUs in mask; on_line(line): its output line by line instead of the console."""
     import ctypes
     CREATE_SUSPENDED, BELOW_NORMAL_PRIORITY_CLASS = 0x4, 0x4000
-    p = subprocess.Popen(cmd, env=env, creationflags=CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS)
+    pipe = subprocess.PIPE if on_line else None
+    p = subprocess.Popen(cmd, env=env, creationflags=CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS, stdout=pipe,
+                         stderr=subprocess.STDOUT if on_line else None, text=bool(on_line), errors='replace')
     handle = int(p._handle)
     if not ctypes.windll.kernel32.SetProcessAffinityMask(handle, ctypes.c_size_t(mask)):
         p.kill()
         sys.exit('SetProcessAffinityMask failed')
     ctypes.windll.ntdll.NtResumeProcess(handle)
+    if on_line:
+        for line in p.stdout:
+            on_line(line.rstrip('\n'))
     return p.wait()
 
 

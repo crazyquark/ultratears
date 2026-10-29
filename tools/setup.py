@@ -34,6 +34,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import deps_install  # noqa: E402
+import progress  # noqa: E402
 import toolchain  # noqa: E402
 import public_tree  # noqa: E402
 import version  # noqa: E402
@@ -401,7 +402,7 @@ def main():
     for i, (name, fn) in enumerate(STEPS, 1):
         if a.only and name != a.only and name != 'check':
             continue
-        say(f'[{i}/{len(STEPS)}] {name}')
+        say(f'[{i}/{len(STEPS)}] {name}' + (f'  ({progress.clock(time.time() - t_all)} since the start)' if i > 1 else ''))
         t0 = time.time()
         try:
             result = fn(dump, state) if name == 'check' else fn(dump, state, a.cpus)
@@ -410,8 +411,8 @@ def main():
             save_state(state)
             sys.exit(1)
         save_state(state)
-        say(f'  {result or "ok"} ({time.time() - t0:.0f} s)')
-    say(f'\nDone in {(time.time() - t_all) / 60:.0f} min. Start the game: UltraTears.exe in {ROOT}')
+        say(f'  {result or "ok"} ({progress.clock(time.time() - t0)})')
+    say(f'\nDone in {progress.clock(time.time() - t_all)}. Start the game: UltraTears.exe in {ROOT}')
 
 
 if __name__ == '__main__':

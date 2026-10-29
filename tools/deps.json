@@ -1,5 +1,25 @@
 {
- "comment": "Build tools of a source build, installed by tools/deps_install.py from where they are published. Change a version here together with its size and hash.",
+ "comment": "Build tools of a source build, installed by tools/deps_install.py from where they are published. Change a version here together with its size and hash. Mirrors: the first base is the host the pinned URLs name; the others serve the same paths and are tried in turn when it is slow or unreachable (hashes are checked either way).",
+ "mirrors": {
+  "msys2": [
+   "https://repo.msys2.org",
+   "https://mirror.yandex.ru/mirrors/msys2",
+   "https://mirror.msys2.org",
+   "https://mirror.selfnet.de/msys2",
+   "https://mirror.clarkson.edu/msys2",
+   "https://mirror.umd.edu/msys2",
+   "https://mirrors.tuna.tsinghua.edu.cn/msys2",
+   "https://mirrors.ustc.edu.cn/msys2",
+   "https://mirrors.bfsu.edu.cn/msys2"
+  ],
+  "pypi": [
+   "https://files.pythonhosted.org",
+   "https://mirrors.aliyun.com/pypi",
+   "https://pypi.tuna.tsinghua.edu.cn",
+   "https://mirrors.ustc.edu.cn/pypi",
+   "https://mirrors.bfsu.edu.cn/pypi/web"
+  ]
+ },
  "msys2": [
   {
    "name": "mingw-w64-clang-x86_64-clang",

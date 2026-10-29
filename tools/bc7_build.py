@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -20,6 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 from toolchain import CLANG64, env as tool_env  # noqa: E402
 from build_game import run_limited  # noqa: E402
+import progress  # noqa: E402
 from romfs import RomFS  # noqa: E402
 
 SOURCES_C = ['tools/bc7build/bc7build.c', 'src/gfx/tex/astc.c', 'src/gfx/tex/bc7key.c']
@@ -70,9 +72,21 @@ def main():
     exe = build_tool(env)
     print(f'{len(files)} texture files -> {cache}', flush=True)
     t0 = time.time()
+    bar = progress.Bar('re-encoding the textures', len(files), 'files')
+
+    def line(text):   # bc7build's "<i> / <n> files, ..." every 500 files: the progress line; the rest as it is
+        m = re.match(r'(\d+) / (\d+) files', text)
+        if m:
+            bar.update(int(m.group(1)), int(m.group(2)))
+        elif text.startswith('done:'):
+            bar.update(bar.total, force=True)
+            bar.finish()
+            print(text, flush=True)
+        else:
+            print(text, flush=True)
     rc = run_limited([str(exe), str(rom.image or rom.root), str(lst), str(cache), str(a.threads), str(a.quality),
                       str(a.max_block_area)], env,
-                     (1 << a.threads) - 1)
+                     (1 << a.threads) - 1, line)
     print(f'{time.time() - t0:.0f} s', flush=True)
     sys.exit(rc)
 

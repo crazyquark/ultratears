@@ -16,6 +16,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 from toolchain import XLATE  # noqa: E402
+import progress  # noqa: E402
 
 
 def start_pinned(cmd, mask, env):
@@ -46,6 +47,7 @@ def main():
     results, lock = [], threading.Lock()
     shards = [lines[i::a.workers] for i in range(a.workers)]
     t0 = time.time()
+    bar = progress.Bar('translating the shaders', len(lines), 'shaders') if a.quiet else None
 
     def worker(shard):
         p = start_pinned(cmd + ['--serve'], (1 << a.workers) - 1, env)
@@ -61,13 +63,17 @@ def main():
             msg = '' if ok else (reply[len('fail ' + key) + 1:] if reply.startswith('fail') else reply or 'no reply')
             with lock:
                 results.append((key, 'ok' if ok else 'fail', dt, size, msg.replace('\t', ' ')[:300]))
-                if len(results) % 2000 == 0 and not a.quiet:
+                if bar:
+                    bar.update(len(results))
+                elif len(results) % 2000 == 0:
                     print(f'{len(results)}/{len(lines)} {time.time() - t0:.0f}s', flush=True)
         p.stdin.close(); p.wait()
 
     threads = [threading.Thread(target=worker, args=(s,)) for s in shards]
     for t in threads: t.start()
     for t in threads: t.join()
+    if bar:
+        bar.finish()
     with (a.dir / ('translate-results-new.tsv' if a.new_only else 'translate-results.tsv')).open('w') as f:   # --new-only keeps the full table
         f.write('key\tresult\tseconds\tspv_bytes\tmessage\n')
         for r in sorted(results):

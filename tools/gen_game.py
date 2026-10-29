@@ -4,6 +4,7 @@ usage: python tools/gen_game.py <exefs dir> <output dir>
 Bases must match src/runtime/rt.h (MAIN_BASE, SUBSDK0_BASE, SDK_BASE).
 """
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -26,6 +27,23 @@ def main():
         procs.append((name, log, subprocess.Popen(
             [sys.executable, '-X', 'faulthandler', str(ROOT / 'tools/lifter/gen.py'), name, str(exefs / name), hex(base), str(out / name),
              '--simd', 'c'], stdout=log, stderr=subprocess.STDOUT)))
+    # one progress line: the lifters' "progress <functions done>/<functions>" lines (none while they analyse)
+    sys.path.insert(0, str(ROOT / 'tools'))
+    import progress
+    bar = progress.Bar('translating the code', 0, 'functions')
+    while any(p.poll() is None for _, _, p in procs):
+        done = total = 0
+        for name, _, _ in procs:
+            try:
+                tail = (out / f'{name}.log').read_bytes()[-400:].decode(errors='replace')
+            except OSError:
+                continue
+            m = re.findall(r'progress (\d+)/(\d+)', tail)
+            if m:
+                done, total = done + int(m[-1][0]), total + int(m[-1][1])
+        bar.update(done, total)
+        time.sleep(0.5)
+    bar.finish()
     failed = False
     for name, log, p in procs:
         code = p.wait()

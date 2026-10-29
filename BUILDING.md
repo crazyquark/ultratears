@@ -32,6 +32,11 @@ files are downloaded. `deps\installed.json` records what was installed: a change
 changed translator source rebuilds the translator. `ULTRS_NO_SYSTEM_TOOLS=1` ignores the tools installed on this PC
 (to test what a clean PC gets).
 
+A download that breaks resumes where it stopped; a host that does not answer (down, or blocked in your country) is
+left after one timeout for the next mirror listed in `tools/deps.json` (MSYS2: Yandex, the MSYS2 CDN, mirrors in
+Germany, the USA and China; PyPI: Aliyun and others). Every file is checked against its pinned hash, so any mirror is
+safe. `ULTRS_MSYS2_MIRROR=<base URL>` / `ULTRS_PYPI_MIRROR=<base URL>` put a mirror of your choice first.
+
 ## Build
 
 ```

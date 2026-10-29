@@ -19,6 +19,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -73,36 +74,107 @@ def wipe(home, sub):
 
 
 # ---------------------------------------------------------------- downloads
-def fetch(item, cache):
-    """item's file in cache, downloaded unless a good copy is there; its size and hash checked."""
-    name = urllib.parse.unquote(item['url'].rsplit('/', 1)[1])
-    dst = cache / name
-    if dst.is_file() and good(dst, item):
-        return dst
-    cache.mkdir(parents=True, exist_ok=True)
-    part = dst.with_name(dst.name + '.part')
-    req = urllib.request.Request(item['url'], headers={'User-Agent': 'UltraTears-setup'})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r, open(part, 'wb') as out:
-            total = int(r.headers.get('Content-Length', 0)) or item.get('size', 0)
-            done, shown = 0, -1
+# A download that breaks is resumed where it stopped (HTTP Range), a few times per source; a source that sends nothing
+# (down, or blocked: repo.msys2.org timed out for a player in Russia, 2026-10-29) is left at once for the next one, and
+# tried last for the rest of the run. The mirrors in tools/deps.json serve the same files (their hashes are checked, so
+# any mirror will do). ULTRS_MSYS2_MIRROR=<base URL> is tried first for the MSYS2 packages, ULTRS_PYPI_MIRROR for the
+# wheels.
+TRIES, TIMEOUT = 3, 20
+SLOW = set()   # hosts that failed a file TRIES times in this run
+
+
+def sources(item):
+    """The URLs item can be downloaded from, in order."""
+    urls = [item['url']]
+    for kind, env in (('msys2', 'ULTRS_MSYS2_MIRROR'), ('pypi', 'ULTRS_PYPI_MIRROR')):
+        bases = manifest().get('mirrors', {}).get(kind, [])   # bases[0]: the host the pinned URL names
+        if not bases or not item['url'].startswith(bases[0] + '/'):
+            continue
+        path = item['url'][len(bases[0]):]
+        if os.environ.get(env):
+            bases = [os.environ[env].rstrip('/')] + bases
+        urls = [b + path for b in bases]
+    urls = list(dict.fromkeys(urls))
+    return [u for u in urls if u.split('/')[2] not in SLOW] + [u for u in urls if u.split('/')[2] in SLOW]
+
+
+def download(url, part, bar):
+    """url into part, continuing a partial one; bar counts the bytes."""
+    have = part.stat().st_size if part.is_file() else 0
+    headers = {'User-Agent': 'UltraTears-setup'}
+    if have:
+        headers['Range'] = f'bytes={have}-'
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=TIMEOUT) as r:
+        if have and r.status != 206:   # the server sent the whole file: start over
+            bar.add(-have)
+            have = 0
+        with open(part, 'ab' if have else 'wb') as out:
             while True:
-                block = r.read(1 << 20)
+                block = r.read(1 << 18)
                 if not block:
                     break
                 out.write(block)
-                done += len(block)
-                if total >= 32 << 20 and done // (64 << 20) != shown:
-                    shown = done // (64 << 20)
-                    say(f'    {name}: {done / 2**20:.0f} / {total / 2**20:.0f} MiB')
-    except Exception as e:
-        part.unlink(missing_ok=True)
-        raise DepsError(f'could not download {item["url"]}: {e}') from e
-    if not good(part, item):
-        part.unlink(missing_ok=True)
-        raise DepsError(f'{name} from {item["url"]} is not the pinned file (size or hash differs)')
-    part.replace(dst)
-    return dst
+                bar.add(len(block))
+
+
+def fetch_all(items, cache, label):
+    """Every item's file in cache (downloaded unless a good copy is there; sizes and hashes checked), with one
+    progress line for all of them."""
+    import progress
+    cache.mkdir(parents=True, exist_ok=True)
+    files, todo = [], []
+    for item in items:
+        dst = cache / urllib.parse.unquote(item['url'].rsplit('/', 1)[1])
+        files.append(dst)
+        if not (dst.is_file() and good(dst, item)):
+            todo.append((item, dst))
+    if not todo:
+        return files
+    bar = progress.Bar(f'downloading {label}', sum(i.get('size', 0) for i, _ in todo), 'MiB', 2**20, rate=True)
+    for item, dst in todo:
+        part = dst.with_name(dst.name + '.part')
+        base = bar.done - (part.stat().st_size if part.is_file() else 0)
+        bar.add(part.stat().st_size if part.is_file() else 0)
+        errors = []
+        for url in sources(item):
+            host, ok = url.split('/')[2], False
+            for _ in range(TRIES):
+                before = bar.done
+                try:
+                    download(url, part, bar)
+                    ok = True
+                    break
+                except Exception as e:   # a timeout, a broken connection, an HTTP error
+                    errors.append(f'{host}: {e}')
+                    if bar.done == before:   # nothing came at all: this source is down or blocked, not flaky
+                        break
+                    if isinstance(e, urllib.error.HTTPError) and e.code in (403, 404, 410, 416):
+                        part.unlink(missing_ok=True)   # this source does not have it: the next one from the start
+                        bar.update(base)
+                        break
+            if not ok:
+                if host not in SLOW:
+                    nxt = [u.split('/')[2] for u in sources(item) if u.split('/')[2] not in SLOW | {host}]
+                    bar.note(f'{host} does not answer ({errors[-1].split(": ", 1)[-1][:60]})'
+                             + (f'; trying {nxt[0]}' if nxt else ''))
+                SLOW.add(host)   # tried last for the rest of this run
+                continue
+            if good(part, item):
+                break
+            part.unlink(missing_ok=True)   # not the pinned file: try the next source
+            bar.update(base)
+            errors.append(f'{url.split("/")[2]}: not the pinned file (size or hash differs)')
+        else:
+            bar.finish()
+            raise DepsError(f'could not download {dst.name} from any source:\n    ' + '\n    '.join(errors[-6:]) +
+                            '\n  Check the connection (a VPN may help), or download it by hand into ' + str(cache))
+        part.replace(dst)
+    bar.finish()
+    return files
+
+
+def fetch(item, cache, label):
+    return fetch_all([item], cache, label)[0]
 
 
 def good(path, item):
@@ -147,7 +219,7 @@ def install_python(home):
         raise DepsError('deps\\python is outdated but is the Python running setup: start setup.py with another Python')
     cache = home / 'deps/downloads'
     say(f'  Python {m["python"]["version"]} with {", ".join(PACKAGES)} -> deps\\python')
-    files = [fetch(m['python'], cache)] + [fetch(w, cache) for w in m['wheels']]
+    files = fetch_all([m['python']] + m['wheels'], cache, 'Python')
     wipe(home, 'python')
     with zipfile.ZipFile(files[0]) as z:   # the NuGet package: the interpreter is under tools/
         for info in z.infolist():
@@ -199,8 +271,10 @@ def install_clang64(home):
     cache = home / 'deps/downloads'
     total = sum(p['size'] for p in m['msys2'])
     say(f'  clang / lld / ninja and the libraries ({len(m["msys2"])} MSYS2 packages, {total / 2**20:.0f} MiB) -> deps\\clang64')
-    files = [fetch(p, cache) for p in m['msys2']]
+    files = fetch_all(m['msys2'], cache, 'clang')
     wipe(home, 'clang64')
+    import progress
+    bar = progress.Bar('unpacking', len(files), 'packages')
     own = home / 'deps/clang64'
     own.mkdir(parents=True)
     def where(name):   # clang64/<rel> -> its place in deps/clang64 (None: package metadata, .PKGINFO etc.)
@@ -229,6 +303,8 @@ def install_clang64(home):
                     if target.is_file():
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(target, dst)
+        bar.add(1)
+    bar.finish()
     if not clang64_ok(own):
         raise DepsError('the installed deps\\clang64 lacks part of the toolchain')
     mark(home, 'clang64', key_of(m['msys2']))
@@ -272,16 +348,22 @@ def build_xlate(home):
         own = home / 'deps/dotnet'
         if installed(home).get('dotnet') != key_of(m['dotnet']) or not (own / 'dotnet.exe').is_file():
             say(f'  .NET SDK {m["dotnet"]["version"]} (to build the shader translator) -> deps\\dotnet')
-            z = fetch(m['dotnet'], home / 'deps/downloads')
+            z = fetch(m['dotnet'], home / 'deps/downloads', '.NET SDK')
             wipe(home, 'dotnet')
-            with zipfile.ZipFile(z) as zf:
+            import progress
+            with zipfile.ZipFile(z) as zf, progress.Ticker('unpacking .NET SDK'):
                 zf.extractall(own)
             mark(home, 'dotnet', key_of(m['dotnet']))
             z.unlink(missing_ok=True)
         dotnet = str(own / 'dotnet.exe')
-    say('  building the shader translator from this source -> deps\\shaders')
-    rc = subprocess.run([sys.executable, str(home / 'tools/build_xlate.py'), '--dotnet', dotnet, '--out', str(home / 'deps/shaders'),
-                         '--cache', str(home / 'deps/dotnet-cache')], cwd=home).returncode
+    say('  building the shader translator from this source -> deps\\shaders (a few minutes the first time)')
+    import progress
+    with progress.Ticker('building the shader translator'):
+        r = subprocess.run([sys.executable, str(home / 'tools/build_xlate.py'), '--dotnet', dotnet, '--out', str(home / 'deps/shaders'),
+                            '--cache', str(home / 'deps/dotnet-cache')], cwd=home, capture_output=True, text=True)
+    rc = r.returncode
+    if rc:
+        print(r.stdout[-4000:] + r.stderr[-4000:], flush=True)
     if rc or not xlate_ok(home):
         raise DepsError('building the shader translator failed; the lines above say why')
 
