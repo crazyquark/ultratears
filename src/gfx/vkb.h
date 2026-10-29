@@ -84,6 +84,7 @@ int vkb_tex_refresh(VkCommandBuffer cb, vkb_image *im);   // outside a pass: the
 
 vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im);   // outside a pass: a copy to sample im from (vkb_tex.c)
 uint64_t vkb_tex_feedback_copies(void);
+int vkb_fb_general(void);   // no feedback loops: sampled targets attached in GENERAL and read in place (vkb_draw.c)
 vkb_image *vkb_image_of(const tex_t *t);   // creates it on first use; NULL for textures that cannot be images yet
 // Moves the image to `layout` before work of `stage`/`access` (records a barrier on the current command buffer).
 void vkb_image_use(VkCommandBuffer cb, vkb_image *im, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);

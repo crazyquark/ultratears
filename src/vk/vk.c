@@ -238,8 +238,8 @@ static int create_device(void) {
     vkc.has_interlock = vkc.has_interlock && ffsi.fragmentShaderPixelInterlock;
     if (!vkc.has_interlock) LOG("no fragment shader pixel interlock: shaders that use it run without it");
     vkc.has_feedback_loop = has_fl && has_fld && ffl.attachmentFeedbackLoopLayout && ffld.attachmentFeedbackLoopDynamicState;
-    // TOTK_VK_NO_FEEDBACK=1 (development): as on a GPU without them (AMD on Windows): the copies of vkb_tex_feedback_copy;
-    // =2: without the copies either (sampled targets read empty, as before 2026-10-29)
+    // TOTK_VK_NO_FEEDBACK=1 (development): as on a GPU without them (AMD on Windows); what is done instead -
+    // TOTK_VK_FB_FALLBACK (vkb_draw.c)
     if (getenv("TOTK_VK_NO_FEEDBACK") && *getenv("TOTK_VK_NO_FEEDBACK") != '0') {
         vkc.has_feedback_loop = 0;
         has_fl = has_fld = 0;

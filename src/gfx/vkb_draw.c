@@ -500,9 +500,27 @@ static vkb_image *handle_image(uint64_t h, const view_t **view) {
 // without it they would leave the pass, and the draw saw an empty texture instead (the audit's top substitution).
 static __thread vkb_image *g_fb_rt[9];   // this draw's targets: colour 0-7, depth 8
 static __thread uint32_t g_fb;           // the targets it samples (vkb.h VKB_FB_DEPTH)
-// Without the extension: the targets it samples (g_fbcopy) are read from copies taken before the draw (vkb_tex_feedback_copy).
-static __thread uint32_t g_fbcopy;
+// Without the extension (AMD's Windows drivers) a draw that samples its own target either
+//  - "general" (default): the target is attached in VK_IMAGE_LAYOUT_GENERAL and sampled in place, as before the
+//    extension existed; the pass ends before such a draw once anything was drawn in it, and the next pass's barrier
+//    makes those writes visible. Undefined by the Vulkan spec, the way of layers and drivers before 2022. On the
+//    RTX 3060 as without the extension: the frame of the copies at the cost of the passes only;
+//  - "copy" (TOTK_VK_FB_FALLBACK=copy): reads a copy taken before the draw (vkb_tex_feedback_copy) - defined, but ~200
+//    copies a frame doubled the GPU time (12 -> 26 ms, p95 frame 35 -> 64 ms on the 3060);
+//  - "none" (=none): reads an empty texture, as before 2026-10-29 (the black screen of AMD).
+enum { FB_GENERAL, FB_COPY, FB_NONE };
+static int fb_fallback(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *e = getenv("TOTK_VK_FB_FALLBACK");
+        m = e && !strcmp(e, "copy") ? FB_COPY : e && !strcmp(e, "none") ? FB_NONE : FB_GENERAL;
+    }
+    return m;
+}
+int vkb_fb_general(void) { return !vkc.has_feedback_loop && fb_fallback() == FB_GENERAL; }
+static __thread uint32_t g_fbcopy;   // "copy": the sampled targets read from copies
 static __thread vkb_image *g_fbtwin[9];
+static __thread uint64_t g_drawn_pass;   // the pass in which this thread last recorded a draw
 
 static int fb_index(const vkb_image *im) {   // the target bit of a sampled image, -1: not a target of this draw
     for (int i = 0; im && i < 9; i++) if (g_fb_rt[i] == im) return i;
@@ -525,9 +543,10 @@ static void feedback_scan(const vkb_shader *vs, const vkb_shader *fs) {
             if (b >= 0) g_fb |= 1u << b;
         }
     }
-    static int copies = -1;   // TOTK_VK_NO_FEEDBACK=2 (development): no copies, sampled targets read empty as before
-    if (copies < 0) copies = !(getenv("TOTK_VK_NO_FEEDBACK") && *getenv("TOTK_VK_NO_FEEDBACK") == '2');
-    if (!vkc.has_feedback_loop) { g_fbcopy = copies ? g_fb : 0; g_fb = 0; }   // copies instead (draw: fb_copies)
+    if (!vkc.has_feedback_loop && fb_fallback() != FB_GENERAL) {   // "general" keeps g_fb: attached in GENERAL
+        g_fbcopy = fb_fallback() == FB_COPY ? g_fb : 0;
+        g_fb = 0;
+    }
 }
 static int fb_sampled(const vkb_image *im) { int b = fb_index(im); return b >= 0 && ((g_fb >> b) & 1); }
 static vkb_image *fb_twin(vkb_image *im) {   // what the draw samples for im: its copy when it is a copied target
@@ -980,7 +999,8 @@ static void write_stage(writes_t *W, VkDescriptorSet set, const vkb_shader *sh, 
         const view_t *v = NULL;
         vkb_image *im = h ? fb_twin(handle_image(h, &v)) : NULL;
         VkImageViewType vt = view_type_of(sh->tex[i].type);
-        int readable = im && (fb_sampled(im) ? vkb_layout_is(im, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
+        int readable = im && (fb_sampled(im) ? vkb_layout_is(im, vkc.has_feedback_loop ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+                                                                                        : VK_IMAGE_LAYOUT_GENERAL)
                                              : vkb_layout_is(im, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
         VkImageView view = readable ? vkb_view(im, v, 0, (int)vt) : VK_NULL_HANDLE;
         if (sh->tex[i].separate) vkb_audit(A_TEX_SEPARATE, sh->key);
@@ -1852,7 +1872,10 @@ void vkb_draw(const uint8_t *a, int indexed) {
         }
     }
     feedback_scan(vs, fs);
-    if (vkb_in_pass() && (vkb_pass_fb() != g_fb || g_fbcopy)) vkb_pass_end_r(PE_FEEDBACK);   // [temporary] a pass per change of sampled targets
+    // [temporary] a pass per change of sampled targets; without the extension also once the pass has drawn (its writes
+    // become visible to this draw's reads only through the next pass's barrier)
+    if (vkb_in_pass() && (vkb_pass_fb() != g_fb || g_fbcopy || (g_fb && !vkc.has_feedback_loop && g_drawn_pass == vkb_pass_serial())))
+        vkb_pass_end_r(PE_FEEDBACK);
     if (g_fbcopy) fb_copies();
     if ((vkb_in_pass() && (images_need_work(vs, 0) || (fs && images_need_work(fs, 1))))) vkb_pass_end_r(PE_IMAGES);
     if (!vkb_in_pass()) {
@@ -1907,6 +1930,7 @@ void vkb_draw(const uint8_t *a, int indexed) {
         vkb_cnt_add(g_local_barriers, 1);
     }
     wrote_pass = vkb_pass_serial();
+    g_drawn_pass = vkb_pass_serial();
     t_vertex_end = 0;
     if (indexed && di->base_vertex > 0)   // the indices are read only when the base vertex alone is past a stream's range
         for (uint32_t s = 0; s < 16; s++)
