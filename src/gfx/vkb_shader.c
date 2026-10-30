@@ -171,7 +171,7 @@ static void sha256_transform(uint32_t state[8], const uint8_t data[64]) {
         uint32_t S0 = ror32_s(a, 2) ^ ror32_s(a, 13) ^ ror32_s(a, 22);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
         uint32_t temp2 = S0 + maj;
-        h = g; g = f; e = d + temp1; d = c; c = b; b = a; a = temp1 + temp2;
+        h = g; g = f; f = e; e = d + temp1; d = c; c = b; b = a; a = temp1 + temp2;
     }
     state[0] += a; state[1] += b; state[2] += c; state[3] += d;
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
