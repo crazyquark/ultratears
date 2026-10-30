@@ -13,7 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
-from toolchain import CLANG64, env as tool_env  # noqa: E402
+from toolchain import CLANG64, LINUX_TOOLS, env as tool_env  # noqa: E402
 import version  # noqa: E402
 
 LINUX = sys.platform == 'linux'
@@ -133,7 +133,8 @@ def cpu_arch():
     """x86-64-v3 where this CPU has AVX2, FMA and BMI2 (Intel Haswell / 2013, AMD Excavator / Zen and newer), else
     x86-64-v2 (SSE4.2): the code is built on the player's PC, so for its CPU (issue #19: i7-3770, Xeon E3-1230 v2).
     clang -march=native says which features the CPU has."""
-    r = subprocess.run([str(CLANG64 / 'clang.exe'), '-march=native', '-dM', '-E', '-x', 'c', os.devnull], capture_output=True,
+    clang = LINUX_TOOLS['clang'] if LINUX else CLANG64 / 'clang.exe'
+    r = subprocess.run([str(clang), '-march=native', '-dM', '-E', '-x', 'c', os.devnull], capture_output=True,
                        text=True, env=tool_env())
     if r.returncode:
         print('cannot ask clang about this CPU: building for x86-64-v3', flush=True)
