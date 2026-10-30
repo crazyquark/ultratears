@@ -1389,6 +1389,7 @@ static void update_buffer(uint64_t dst, uint64_t n, const uint8_t *data) {
     vkb_mirrors_evict(dst, n);
     vkb_pool_use(dst, n, 1);
     vkb_ucap_drop(dst, n);   // an inline uniform update: later draws read the updated memory
+    vkb_ucap_inline(dst, n, data);   // ... and CPU reads of it (pointers) the updated bytes
     VkBuffer db; VkDeviceSize off;
     if (!vkb_gpu_addr(dst, n, &db, &off)) return;
     VkCommandBuffer cb = vkb_cmd();
@@ -2529,7 +2530,7 @@ static void walk_command(uint32_t op, const uint8_t *a) {
     }
     case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); mtl_sub_counter(ad, (uint32_t)t); break; }
     case OP_COPY_B2B: { uint64_t d, n; memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); if (n) vkb_ucap_drop(d, n); break; }   // GPU writes
-    case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); if (n) vkb_ucap_drop(d, n); break; }
+    case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); if (n) { vkb_ucap_drop(d, n); vkb_ucap_inline(d, n, a + 16); } break; }
     case OP_COPY_T2B: { uint64_t ad, len; if (vkb_copy_t2b_range((const p_copy_b2t *)a, &ad, &len)) vkb_ucap_drop(ad, len); break; }
     case OP_COPY_STRIDE: vkb_copy_stride(((const p_copy_stride *)a)->stride); break;
     case OP_SET_RT: memcpy(&g_rt, a, sizeof g_rt); break;

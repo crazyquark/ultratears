@@ -11,7 +11,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <direct.h>
 
 #include "compat/gfx_compat.h"
 #include "host/hle.h"
@@ -894,11 +893,11 @@ static void sbuf_range(const vkb_shader *sh, int stage, int i, uint64_t *addr, u
         }
     }
     // A range that runs on past the end of its pool is cut there (L20): TOTK's Depths terrain declares 258 MB from a
-    // pointer in c6 and reads its patch tables and corner positions in the first MB. Whole, the range fitted no pool:
-    // an empty buffer was bound (every vertex of the terrain at one point: the ground not drawn, Link unlit near it)
-    // and the pool's device copy was not brought up to date for it. [temporary] Cut, the terrain is drawn but partly in
-    // shards (L20, being traced: the corner data, not the copies). On the Switch the range reads on into the next pools
-    // of the GPU's address space; with TOTK_GPU_VA=1 the whole range is assembled (backend_vk.c vkb_span_addr).
+    // pointer in c6 (one piece of the mesh, a .quad file of the game) and reads its patch tables and corner positions in
+    // the first MB. Whole, the range fitted no pool: an empty buffer was bound (every vertex of the terrain at one point:
+    // the ground not drawn, Link unlit near it) and the pool's device copy was not brought up to date for it. On the
+    // Switch the range reads on into the next pools of the GPU's address space; with TOTK_GPU_VA=1 the whole range is
+    // assembled (backend_vk.c vkb_span_addr).
     // TOTK_VK_SBUF_CLIP=0: whole, as before.
     static int clip = -1;
     if (clip < 0) { const char *e = getenv("TOTK_VK_SBUF_CLIP"); clip = !e || *e != '0'; }
@@ -1848,35 +1847,6 @@ void vkb_draw(const uint8_t *a, int indexed) {
         }
         if (S.sh[0]) trace_resources(S.sh[0], 0);
         if (S.sh[1]) trace_resources(S.sh[1], 1);
-        // [temporary] L20, TOTK_TERRAIN_DUMP=<dir>: the inputs of the traced draws of the Depths terrain's G-buffer vertex
-        // shader (31721b90fff9): c4, c6, c15, c16 as captured, the first MB of s0 and the indices, as <dir>/t<n>_*.bin
-        static const char *tdir;
-        static int tdn;
-        if (!tdir) { tdir = getenv("TOTK_TERRAIN_DUMP"); if (!tdir) tdir = ""; }
-        if (*tdir && indexed && S.sh[0] && S.sh[0]->key && !strncmp(S.sh[0]->key, "31721b90fff9", 12) && tdn < 24) {
-            char p[512];
-            _mkdir(tdir);
-            static const int slots[4] = {4, 6, 15, 16};
-            for (int k = 0; k < 4; k++) {
-                const p_bind_buf *u = &S.ubo[0][slots[k] - 3];
-                uint8_t b[4096] = {0};
-                if (u->addr) vkb_ucap_read(u->addr, b, u->size < sizeof b ? u->size : sizeof b);
-                snprintf(p, sizeof p, "%s/t%d_c%d.bin", tdir, tdn, slots[k]);
-                FILE *f = fopen(p, "wb"); if (f) { fwrite(b, 1, sizeof b, f); fclose(f); }
-            }
-            uint64_t a, n;
-            sbuf_range(S.sh[0], 0, 0, &a, &n);
-            if (a && n) {
-                snprintf(p, sizeof p, "%s/t%d_s0.bin", tdir, tdn);
-                FILE *f = fopen(p, "wb"); if (f) { fwrite((const void *)(uintptr_t)a, 1, n < (1u << 20) ? n : (1u << 20), f); fclose(f); }
-            }
-            uint32_t isz = di->itype == 0 ? 1u : di->itype == 1 ? 2u : 4u;
-            snprintf(p, sizeof p, "%s/t%d_idx.bin", tdir, tdn);
-            FILE *f = fopen(p, "wb"); if (f) { fwrite((const void *)(uintptr_t)di->ibuf, isz, (size_t)di->count, f); fclose(f); }
-            VLOG("[terrain dump] t%d: s0 %#llx+%#llx, indices %d of %u bytes, base vertex %d", tdn, (unsigned long long)a, (unsigned long long)n,
-                 di->count, isz, di->base_vertex);
-            tdn++;
-        }
     }
     if (!resolve_program() || !S.sh[0]) {
         vkb_cnt_add(g_skipped[0], 1);
