@@ -106,11 +106,17 @@ static int open_files(void) {   // g_mu held
     }
     _fseeki64(g_idx, good, SEEK_SET);
     snprintf(path, sizeof path, "%s/bc7.pack", d);
+#ifdef _WIN32
     HANDLE f = pack_size > 0 ? CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                                            FILE_ATTRIBUTE_NORMAL, NULL) : INVALID_HANDLE_VALUE;
     HANDLE m = f != INVALID_HANDLE_VALUE ? CreateFileMappingA(f, NULL, PAGE_READONLY, (DWORD)((uint64_t)pack_size >> 32), (DWORD)pack_size, NULL) : NULL;
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     if (m) { g_map = MapViewOfFile(m, FILE_MAP_READ, 0, 0, (SIZE_T)pack_size); CloseHandle(m); }
+#else
+    const void *plat_map_file(const char *path, uint64_t len, uint64_t *size);   // platform/linux.c (mmap: not reachable here)
+    uint64_t mapped_size;
+    if (pack_size > 0) g_map = plat_map_file(path, (uint64_t)pack_size, &mapped_size);
+#endif
     if (g_map) g_map_size = (uint64_t)pack_size;
     VLOG("BC7 cache %s: %zu surfaces, %.1f MiB%s", d, g_n, pack_size / 1048576.0, g_map ? " (mapped)" : "");
     g_open = 1;

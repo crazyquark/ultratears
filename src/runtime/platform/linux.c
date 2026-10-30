@@ -58,6 +58,21 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 void plat_memory_map(void) {}
 
+// A file mapped read-only, its first len bytes (0: all of it); *size: the bytes mapped. NULL: not there. (The graphics
+// code reads the shader pack and the BC7 cache this way; mmap is not reachable from there.)
+const void *plat_map_file(const char *path, uint64_t len, uint64_t *size) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (!len) len = fstat(fd, &st) ? 0 : (uint64_t)st.st_size;
+    void *p = len ? mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+    close(fd);   // (the mapping stays)
+    if (p == MAP_FAILED) return NULL;
+    *size = len;
+    return p;
+}
+void plat_unmap_file(const void *p, uint64_t size) { munmap((void *)p, size); }
+
 // Write watch: what MEM_WRITE_WATCH / GetWriteWatch are on Windows, done as Wine does it. The window is registered with
 // userfaultfd for asynchronous write protection (the kernel lifts a page's protection on its first write, without
 // stopping anyone), and PAGEMAP_SCAN reports the pages written since their last scan and protects them again in the
