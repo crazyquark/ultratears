@@ -2,10 +2,21 @@
 
 Bar: work of a known size (bytes, files, shaders). Ticker: work of unknown length, its time so far once a second.
 When the output is not a console (a log file, a pipe) a Bar prints a line every 10 % and a Ticker prints nothing.
+With ULTRS_JSON=1 (setup.py --json, for the launcher) a Bar prints events instead: {"ev": "progress", "label", "done",
+"total", "eta"} at most twice a second, one line each; setup.py says which step they belong to.
 """
+import json
+import os
 import sys
 import threading
 import time
+
+JSON = os.environ.get('ULTRS_JSON') == '1'
+
+
+def emit(ev, **fields):
+    """One event line for the launcher (setup.py --json)."""
+    print(json.dumps({'ev': ev, **fields}, ensure_ascii=False), flush=True)
 
 
 def clock(seconds):
@@ -62,12 +73,23 @@ class Bar:
 
     def note(self, text):
         """A line of its own (a source that does not answer...), the progress line drawn again below it."""
+        if JSON:
+            print(f'  {text}', flush=True)
+            return
         with self.lock:
             if self.tty:
                 sys.stdout.write('\r' + ' ' * self.width + '\r')
                 self.width = 0
             print(f'  {text}', flush=True)
             self.last = 0
+
+    def eta(self):
+        """Seconds left from the recent speed, or None."""
+        now = time.monotonic()
+        t1, d1 = self.samples[0]
+        if not self.total or now - t1 < 1 or self.done <= d1 or now - self.t0 < 3:
+            return None
+        return (self.total - self.done) / ((self.done - d1) / (now - t1))
 
     def update(self, done, total=None, force=False):
         with self.lock:
@@ -77,6 +99,12 @@ class Bar:
             now = time.monotonic()
             if now - self.samples[-1][0] >= 0.5:
                 self.samples.append((now, done))
+            if JSON:
+                if force or now - self.last >= 0.5:
+                    self.last = now
+                    eta = self.eta()
+                    emit('progress', label=self.label, done=self.done, total=self.total, eta=round(eta) if eta else None)
+                return
             if not force and now - self.last < 0.3:
                 return
             self.last = now
@@ -100,7 +128,7 @@ class Bar:
         self.stop.set()
         with self.lock:
             self.update(self.done, force=True)
-            if self.tty:
+            if self.tty and not JSON:
                 sys.stdout.write('\n')
                 sys.stdout.flush()
 

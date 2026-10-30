@@ -4,6 +4,12 @@ From a Git checkout the build goes to dist\\, or to --output <folder>: the track
 builder package or a source folder without Git setup runs in place. Build tools this PC lacks are downloaded into
 deps\\ from where they are published (tools/deps_install.py, pinned in tools/deps.json); a builder package has them.
 usage: python tools/setup.py [--output <build folder>] [--dump <folder with exefs\\ and romfs\\>] [--cpus N]
+       python tools/setup.py --check-dump <folder> [--json]   (is it a usable dump? for the launcher's folder screens)
+--json (the launcher): events on stdout, one JSON object a line, among the plain log lines: {"ev": "plan", "steps":
+[{"id", "weight"}]} (the share of a build from nothing, in %), {"ev": "step", "id", "state": "run" / "done" / "skip",
+"secs", "note"}, {"ev": "progress", "label", "done", "total", "eta"} (of the step running), {"ev": "hw", "cases"}
+(tools/hw_check.py), {"ev": "ask", "id": "hw"} (answered by a line "yes" / "no" on stdin), {"ev": "error", "id",
+"code", "args", "message"}, {"ev": "done", "secs"}; --check-dump: {"ev": "dump", "ok", "code", "args", "path"}.
 The dump is game\\ in the checkout/build folder unless --dump names another (remembered for later runs); run it again
 to resume, or to rebuild what changed after an update of the port.
 The dump: the ExeFS and RomFS of The Legend of Zelda: Tears of the Kingdom with update 1.4.3 applied, as plain files,
@@ -65,16 +71,26 @@ OUTPUT_OWN = {'setup.bat', 'VERSION.txt', 'THIRD-PARTY-NOTICES.md', 'licenses', 
 
 
 class Fail(Exception):
-    pass
+    def __init__(self, message, code='failed', **args):
+        """code (and args): for the launcher, which words the failure in the player's language (setup.py --json)."""
+        super().__init__(message)
+        self.code, self.fields = code, args
 
 
 ASKED = 0.0   # seconds spent waiting for the player's answers: not build time (a build "took 46 min" with 28 of them
               # at the question whether to delete the dump, 2026-10-29)
 
 
-def ask(question):
-    """The player's answer on a console ('' without one, or on Ctrl+C), lower case."""
+def ask(question, ask_id=None):
+    """The player's answer on a console ('' without one, or on Ctrl+C), lower case. --json: an "ask" event, the answer
+    a line on stdin from the launcher."""
     global ASKED
+    if progress.JSON and ask_id:
+        t0 = time.time()
+        progress.emit('ask', id=ask_id)
+        line = sys.stdin.readline() if sys.stdin else ''
+        ASKED += time.time() - t0
+        return line.strip().lower()
     if not (sys.stdin and sys.stdin.isatty()):
         return ''
     t0 = time.time()
@@ -179,6 +195,8 @@ def build_from_checkout(a):
         cmd += ['--only', a.only]
     if a.keep_shader_work:
         cmd += ['--keep-shader-work']
+    if a.json:
+        cmd += ['--json']
     return subprocess.run(cmd, cwd=home, env=dict(os.environ, PYTHONNOUSERSITE='1')).returncode
 
 
@@ -229,39 +247,69 @@ def step_check(dump, state):
             raise Fail(f'the Python package {mod} is missing from {sys.executable}: delete the deps folder and run '
                        'setup again to reinstall the build tools')
     toolchain.env()
-    if not os.environ.get('ULTRS_SKIP_GPU_CHECK'):   # before an hour of building for a card the game cannot use
-        import gpu_check
-        verdict, text = gpu_check.check()
-        if verdict == 'ok':
-            say(f'  graphics: {text}')
-        else:   # the player decides: an unsupported card may still be worth a try (ULTRS_SKIP_GPU_CHECK=1: no question)
-            say(f'  graphics: {text}')
-            if ask('  Build anyway? [y/N] ') not in ('y', 'yes', 'д', 'да'):
-                raise Fail('stopped at the graphics card check (ULTRS_SKIP_GPU_CHECK=1 builds without asking)')
+    hardware()
     if toolchain.XLATE is None:
         raise Fail('the shader translator deps\\shaders\\ultrs-shaders.exe is missing: run setup again to build it')
     if packed(state) and all(ok_module(DATA / 'exefs' / n, h) for n, h in EXEFS.items()):
         return 'Tears of the Kingdom 1.4.3, already taken in (data\\exefs, data\\romfs): the dump is no longer needed'
+    check_dump(dump)
+    return 'Tears of the Kingdom 1.4.3 (the code modules match)'
+
+
+def hardware():
+    """What this PC lacks (tools/hw_check.py), before an hour of building: not enough disk space stops the build; a card
+    the game cannot run on asks whether to build anyway (ULTRS_SKIP_GPU_CHECK=1: no graphics question)."""
+    import hw_check
+    cases = hw_check.cases(ROOT)
+    if os.environ.get('ULTRS_SKIP_GPU_CHECK'):
+        cases = [c for c in cases if c['sev'] != 'stop']
+    if progress.JSON:
+        progress.emit('hw', cases=cases)
+    for c in cases:
+        say(f'  {c["sev"]}: {hw_check.text(c)}')
+    block = [c for c in cases if c['sev'] == 'block']
+    if block:
+        raise Fail(hw_check.text(block[0]), block[0]['code'], **block[0]['args'])
+    if any(c['sev'] == 'stop' for c in cases) and ask('  Build anyway? [y/N] ', 'hw') not in ('y', 'yes', 'д', 'да'):
+        raise Fail('stopped at the hardware check (ULTRS_SKIP_GPU_CHECK=1 builds without asking)', 'hw_declined')
+    if not cases:
+        say('  hardware: everything the game needs is here')
+
+
+def find_dump(path):
+    """The folder with exefs\\ and romfs\\ for what the player gave: the folder itself, one of its subfolders (the
+    folder above the dump was dropped) or the folder above it (exefs or romfs itself was dropped). None if none."""
+    path = pathlib.Path(path)
+    if not path.is_dir():
+        return None
+    for c in [path, path.parent] + sorted(p for p in path.iterdir() if p.is_dir()):
+        if (c / 'exefs').is_dir() and (c / 'romfs').is_dir():
+            return c
+    return None
+
+
+def check_dump(dump):
+    """Is dump the extracted ExeFS and RomFS of TOTK 1.4.3? Fail with a code for the launcher when not."""
     if not dump.is_dir():
         raise Fail(f'{dump} does not exist: put your extracted game there (game\\exefs and game\\romfs), '
-                   'or give its folder with --dump')
+                   'or give its folder with --dump', 'dump_missing', path=str(dump))
     for p in list(dump.iterdir()) + list((dump / 'exefs').glob('*') if (dump / 'exefs').is_dir() else []):
         if p.suffix.lower() in ENCRYPTED:
             raise Fail(f'{p.name}: encrypted packages are not accepted. Give the extracted exefs and romfs folders '
-                       '(this project decrypts nothing and reads no keys)')
+                       '(this project decrypts nothing and reads no keys)', 'dump_encrypted', file=p.name)
     exefs, romfs = dump / 'exefs', dump / 'romfs'
     if not exefs.is_dir() or not romfs.is_dir():
-        raise Fail(f'{dump} must hold the folders exefs and romfs (extracted, as plain files)')
+        raise Fail(f'{dump} must hold the folders exefs and romfs (extracted, as plain files)', 'dump_no_folders')
     for name, want in EXEFS.items():
         f = exefs / name
         if not f.is_file():
-            raise Fail(f'exefs\\{name} is missing')
+            raise Fail(f'exefs\\{name} is missing', 'dump_incomplete', file=f'exefs/{name}')
         if sha256(f) != want:
             raise Fail(f'exefs\\{name} is not the one of Tears of the Kingdom 1.4.3. Extract the ExeFS again with '
-                       'update 1.4.3 applied (the base game 1.0.0 and other updates are not supported)')
+                       'update 1.4.3 applied (the base game 1.0.0 and other updates are not supported)', 'dump_version')
     if not (romfs / 'Pack/ZsDic.pack.zs').is_file():
-        raise Fail(f'{romfs} does not look like the RomFS of Tears of the Kingdom (Pack\\ZsDic.pack.zs is missing)')
-    return 'Tears of the Kingdom 1.4.3 (the code modules match)'
+        raise Fail(f'{romfs} does not look like the RomFS of Tears of the Kingdom (Pack\\ZsDic.pack.zs is missing)',
+                   'dump_not_totk')
 
 
 def packed(state):
@@ -281,7 +329,8 @@ def step_romfs(dump, state, cpus):
     n, size, content = pack(dump / 'romfs', out, threads=16, progress=say)
     if n != ROMFS_FILES or size < ROMFS_BYTES or content != ROMFS_CONTENT:
         raise Fail(f'the RomFS is not the one of Tears of the Kingdom 1.4.3 ({n} files, expected {ROMFS_FILES}; '
-                   'content differs). Extract the RomFS again with update 1.4.3 applied; mods do not go here')
+                   'content differs). Extract the RomFS again with update 1.4.3 applied; mods do not go here',
+                   'romfs_version')
     state['romfs'] = content
     return f'{n} files, {size / 2**30:.1f} GiB, content verified'
 
@@ -465,9 +514,18 @@ def main():
     ap.add_argument('--only', choices=[s for s, _ in STEPS], help='run one step only')
     ap.add_argument('--keep-shader-work', action='store_true', help='keep data/shaders/work after packing (development)')
     ap.add_argument('--in-place', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--json', action='store_true', help='events for the launcher on stdout (see the top of this file)')
+    ap.add_argument('--check-dump', type=pathlib.Path, metavar='FOLDER', help='only say whether FOLDER is a usable dump')
     a = ap.parse_args()
     global KEEP_SHADER_WORK
     KEEP_SHADER_WORK = a.keep_shader_work
+    if a.json:   # the tools setup starts read it too (tools/progress.py); UTF-8 whatever the console's code page
+        os.environ['ULTRS_JSON'] = '1'
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        progress.JSON = True
+    if a.check_dump:
+        sys.exit(check_dump_only(a.check_dump))
     no_quick_edit()
     if is_checkout() and not a.in_place:
         sys.exit(build_from_checkout(a))
@@ -476,19 +534,24 @@ def main():
     # The build runs on a Python 3.14 with the build's packages (deps_install.python_for), whichever Python started
     # setup: a source folder without Git (GitHub's Download ZIP) went on with the player's own, which may lack them or
     # be a version they do not install on. Then the rest of the tools, installed when this PC lacks them.
+    if progress.JSON and not os.environ.get('ULTRATEARS_SETUP_OWN_PYTHON'):
+        progress.emit('plan', steps=[{'id': s, 'weight': w} for s, w in STEP_WEIGHTS.items()])
+        progress.emit('step', id='tools', state='run')
+    t_tools = time.time()
     try:
         py = own_python(ROOT)
     except deps_install.DepsError as e:
-        say(f'\nERROR preparing the build tools: {e}')
-        sys.exit(1)
+        fail_tools(e)
     if pathlib.Path(sys.executable).resolve() != py.resolve() and not os.environ.get('ULTRATEARS_SETUP_OWN_PYTHON'):
         env = dict(os.environ, PYTHONNOUSERSITE='1', ULTRATEARS_SETUP_OWN_PYTHON='1')
         sys.exit(subprocess.run([str(py), str(ROOT / 'tools/setup.py')] + sys.argv[1:], cwd=ROOT, env=env).returncode)
     try:
         deps_install.ensure_tools(ROOT)
     except deps_install.DepsError as e:
-        say(f'\nERROR preparing the build tools: {e}')
-        sys.exit(1)
+        fail_tools(e)
+    if progress.JSON:
+        progress.emit('step', id='tools', state='done', secs=round(time.time() - t_tools))
+    awake()
     importlib.reload(toolchain)
     state = load_state()
     if a.dump:
@@ -505,16 +568,62 @@ def main():
         if a.only and name != a.only and name != 'check':
             continue
         say(f'[{i}/{len(STEPS)}] {name}' + (f'  ({progress.clock(time.time() - t_all - ASKED)} since the start)' if i > 1 else ''))
+        if progress.JSON:
+            progress.emit('step', id=name, state='run')
         t0, asked0 = time.time(), ASKED
         try:
             result = fn(dump, state) if name == 'check' else fn(dump, state, a.cpus)
         except Fail as e:
             say(f'\nERROR in step "{name}": {e}')
+            if progress.JSON:
+                progress.emit('error', id=name, code=e.code, args=e.fields, message=str(e))
             save_state(state)
             sys.exit(1)
         save_state(state)
-        say(f'  {result or "ok"} ({progress.clock(time.time() - t0 - (ASKED - asked0))})')
+        secs = time.time() - t0 - (ASKED - asked0)
+        say(f'  {result or "ok"} ({progress.clock(secs)})')
+        if progress.JSON:
+            skipped = result in ('up to date', 'already packed')   # the step had nothing to do (an update, a resume)
+            progress.emit('step', id=name, state='skip' if skipped else 'done', secs=round(secs), note=result or '')
     say(f'\nDone in {progress.clock(time.time() - t_all - ASKED)}. Start the game: UltraTears.exe in {ROOT}')
+    if progress.JSON:
+        progress.emit('done', secs=round(time.time() - t_all - ASKED))
+
+
+# The share of each step in a build from nothing, in % (a clean 0.2.0 package on 8 CPUs, 2026-10-30: romfs 2:19, lift
+# 1:19, compile 15:39, shaders 2:54, textures 10:08; tools: a source build's first download). The launcher's overall bar
+# weighs each step's own progress by these; steps already done count in full.
+STEP_WEIGHTS = {'tools': 2, 'check': 1, 'romfs': 7, 'lift': 4, 'compile': 47, 'shaders': 9, 'textures': 30, 'finish': 0}
+
+
+def fail_tools(e):
+    say(f'\nERROR preparing the build tools: {e}')
+    if progress.JSON:
+        progress.emit('error', id='tools', code='tools', args={}, message=str(e))
+    sys.exit(1)
+
+
+def awake():
+    """The PC does not go to sleep while setup runs (an hour of building on a laptop); the display may still turn off."""
+    if os.name == 'nt':
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)   # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+
+
+def check_dump_only(path):
+    """--check-dump: whether path (or the folder above or below it) holds a usable dump, without building."""
+    path = pathlib.Path(path).resolve()
+    found = find_dump(path)
+    try:
+        check_dump(found or pathlib.Path(path))
+        ok, code, fields, message = True, 'ok', {}, 'Tears of the Kingdom 1.4.3'
+    except Fail as e:
+        ok, code, fields, message = False, e.code, e.fields, str(e)
+    if progress.JSON:
+        progress.emit('dump', ok=ok, code=code, args=fields, path=str(found or path), message=message)
+    else:
+        say(f'{found or path}: {message}')
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':

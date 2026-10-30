@@ -37,9 +37,10 @@ class ExtensionProperties(ctypes.Structure):
 LAYER = b'VK_LAYER_KHRONOS_shader_object'
 
 
-def gpus(layer=None):
+def gpus(layer=None, details=None):
     """[(name, type, 'major.minor.patch', missing requirements)] of every graphics card the Vulkan loader reports, seen
-    through layer when given; None when there is no Vulkan at all (or the layer is not installed)."""
+    through layer when given; None when there is no Vulkan at all (or the layer is not installed). details (a list):
+    filled with {'vendor': PCI vendor id, 'vram': bytes of the largest device-local heap} per card, in the same order."""
     try:
         vk = ctypes.WinDLL('vulkan-1.dll')
     except OSError:
@@ -70,6 +71,15 @@ def gpus(layer=None):
             have = {e.extensionName.decode(errors='replace') for e in exts[:m.value]}
             missing = (['Vulkan 1.3'] if api < API_1_3 else []) + [x for x in NEEDED if x not in have]
             out.append((name, TYPES.get(kind, 'other'), f'{api >> 22}.{(api >> 12) & 0x3ff}.{api & 0xfff}', missing))
+            if details is not None:
+                # VkPhysicalDeviceMemoryProperties: 32 memory types (8 bytes each) after their count, then the heap
+                # count at 260 and 16 heaps of {VkDeviceSize size, flags} (16 bytes) from 264; DEVICE_LOCAL is flag bit 0
+                mem = ctypes.create_string_buffer(520)
+                vk.vkGetPhysicalDeviceMemoryProperties(ctypes.c_void_p(d), mem)
+                heaps = int.from_bytes(mem.raw[260:264], 'little')
+                local = [int.from_bytes(mem.raw[264 + 16 * h:272 + 16 * h], 'little') for h in range(min(heaps, 16))
+                         if int.from_bytes(mem.raw[272 + 16 * h:276 + 16 * h], 'little') & 1]
+                details.append({'vendor': int.from_bytes(props.raw[8:12], 'little'), 'vram': max(local, default=0)})
         return out
     finally:
         vk.vkDestroyInstance(inst, None)

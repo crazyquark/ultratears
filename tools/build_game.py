@@ -181,7 +181,22 @@ def main():
     # The user works on this PC during builds: ninja starts suspended, gets the first --cpus logical CPUs and
     # below-normal priority, then runs; every clang it starts inherits both, so the other CPUs stay free.
     ninja = [str(CLANG64 / 'ninja.exe'), '-C', str(ROOT), '-f', 'build/build.ninja', f'-j{a.j}', '-k', '0']
-    sys.exit(run_limited(ninja, env, (1 << a.cpus) - 1))
+    on_line = None
+    import progress
+    if progress.JSON:   # setup.py --json: ninja's [n/m] as progress events, its lines on to the log
+        import re
+        bar = progress.Bar('compiling', 0, 'files')
+        status = re.compile(r'^\[(\d+)/(\d+)\] ')
+
+        def on_line(line):
+            m = status.match(line)
+            if m:
+                bar.update(int(m.group(1)), int(m.group(2)))
+            print(line, flush=True)
+    rc = run_limited(ninja, env, (1 << a.cpus) - 1, on_line)
+    if on_line:
+        bar.finish()
+    sys.exit(rc)
 
 
 def run_limited(cmd, env, mask, on_line=None):
