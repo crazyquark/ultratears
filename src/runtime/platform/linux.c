@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <execinfo.h>
 #include <fcntl.h>
+#include <linux/fs.h>
+#include <linux/userfaultfd.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -13,7 +15,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/ucontext.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,6 +29,9 @@
 #endif
 
 // ---- guest address space
+static void watch_init(uint64_t lo, uint64_t hi);
+static void watch_register(uint64_t lo, uint64_t hi);
+
 // Everything readable/writable from the start, like macOS: the guest maps at 4K granularity, and untouched pages
 // cost nothing (MAP_NORESERVE: the 12 GB window doesn't count against overcommit).
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
@@ -36,21 +43,80 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
     if (p == MAP_FAILED) return false;
     if (p != (void *)(uintptr_t)lo) { munmap(p, hi - lo); return false; }  // (kernels before 4.17: just a hint)
+    watch_init(lo, hi);
     return true;
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
-    return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
-                -1, 0) == (void *)(uintptr_t)lo;
+    if (mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
+             -1, 0) != (void *)(uintptr_t)lo) return false;
+    watch_register(lo, hi);   // the new mapping is not registered with userfaultfd yet
+    return true;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 void plat_memory_map(void) {}
 
-int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {  // (no write tracking)
-    (void)addr; (void)size; (void)pages; (void)max; (void)page;
-    return -1;
+// Write watch: what MEM_WRITE_WATCH / GetWriteWatch are on Windows, done as Wine does it. The window is registered with
+// userfaultfd for asynchronous write protection (the kernel lifts a page's protection on its first write, without
+// stopping anyone), and PAGEMAP_SCAN reports the pages written since their last scan and protects them again in the
+// same call. The kernel's own writes (file reads into game memory) count too; GPU writes do not, as on Windows.
+// Without it (Linux before 6.7, or TOTK_WRITE_WATCH=0) nvn_dirty treats pools as untracked: textures the CPU updates
+// after their first upload, such as the font atlas, kept their first contents.
+static int g_uffd = -1, g_pagemap = -1;
+static uint64_t g_watch_lo, g_watch_hi;
+
+static void watch_register(uint64_t lo, uint64_t hi) {
+    if (g_uffd < 0 || lo < g_watch_lo || hi > g_watch_hi) return;
+    struct uffdio_register reg = {.range = {.start = lo, .len = hi - lo}, .mode = UFFDIO_REGISTER_MODE_WP};
+    if (ioctl(g_uffd, UFFDIO_REGISTER, &reg)) {
+        fprintf(stderr, "[totk] write watch: registering %llx-%llx failed (%s); writes there are not tracked\n",
+                (unsigned long long)lo, (unsigned long long)hi, strerror(errno));
+        g_watch_hi = g_watch_lo;   // plat_written_pages: -1 from now on
+    }
+}
+
+static void watch_init(uint64_t lo, uint64_t hi) {
+    const char *e = getenv("TOTK_WRITE_WATCH");
+    if (e && !strcmp(e, "0")) return;
+    // UFFD_USER_MODE_ONLY: allowed without privileges; asynchronous write faults never reach the userfaultfd anyway.
+    int uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+    struct uffdio_api api = {.api = UFFD_API, .features = UFFD_FEATURE_WP_ASYNC};
+    int pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    if (uffd < 0 || pagemap < 0 || ioctl(uffd, UFFDIO_API, &api)) {
+        fprintf(stderr, "[totk] write watch: not available (%s); CPU-written textures keep their first contents\n",
+                strerror(errno));
+        if (uffd >= 0) close(uffd);
+        if (pagemap >= 0) close(pagemap);
+        return;
+    }
+    g_uffd = uffd;
+    g_pagemap = pagemap;
+    g_watch_lo = lo;
+    g_watch_hi = hi;
+    watch_register(lo, hi);
+}
+
+int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page) {
+    if (g_pagemap < 0 || addr < g_watch_lo || addr + size > g_watch_hi || max <= 0) return -1;
+    struct page_region r[64];
+    uint64_t at = addr, end = addr + size;
+    int n = 0;
+    while (at < end && n < max) {
+        // max_pages: the pages past it stay unreported and unprotected, so the next call reports them
+        struct pm_scan_arg a = {.size = sizeof a, .flags = PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC, .start = at, .end = end,
+                                .vec = (uint64_t)(uintptr_t)r, .vec_len = 64, .max_pages = (uint64_t)(max - n),
+                                .category_mask = PAGE_IS_WRITTEN, .return_mask = PAGE_IS_WRITTEN};
+        long k = ioctl(g_pagemap, PAGEMAP_SCAN, &a);
+        if (k < 0) return -1;
+        for (long i = 0; i < k; i++)
+            for (uint64_t p = r[i].start; p < r[i].end && n < max; p += 4096) pages[n++] = p;
+        if (a.walk_end <= at) break;
+        at = a.walk_end;
+    }
+    *page = 4096;
+    return n;
 }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
