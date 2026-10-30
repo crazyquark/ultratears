@@ -53,7 +53,7 @@ ROMFS_CONTENT = 'b2a2e966a06158e098c03e564f77fd72809bc57275f04eb0725bcde14d52205
 ENCRYPTED = ('.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz')
 KEEP = {'game', 'data', 'build', 'userdata', 'diag', 'deps', 'dist', 'dev-local'}
 IS_LINUX = sys.platform.startswith('linux')
-EXE_NAME = 'UltraTears' if IS_LINUX else 'UltraTears.exe'
+EXE_NAME = 'ultratears' if IS_LINUX else 'UltraTears.exe'
 XLATE_NAME = 'ultrs-shaders' if IS_LINUX else 'ultrs-shaders.exe'
 # Starts the game with the statistics lines in ultratears.log (UltraTears.exe --debug): what a player runs when asked
 # for a performance log.
@@ -65,7 +65,7 @@ start "" UltraTears.exe --debug
 '''
 OUTPUT_OWN = {'setup.bat', 'VERSION.txt', 'THIRD-PARTY-NOTICES.md', 'licenses', 'ultratears.cfg', 'UltraTears.exe',
               'UltraTears.pdb', 'setup-files.txt', DEBUG_BAT,
-              'setup.sh', 'UltraTears'}
+              'setup.sh', 'ultratears'}
 
 
 class Fail(Exception):
