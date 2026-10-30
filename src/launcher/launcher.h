@@ -6,7 +6,8 @@
 #include <vector>
 #include "imgui.h"
 
-#define ULTRS_REPO "https://github.com/kuraeow/ultratears"
+#define ULTRS_REPO_PATH "kuraeow/ultratears"
+#define ULTRS_REPO "https://github.com/" ULTRS_REPO_PATH
 
 // ---- json.cpp: the events of setup.py --json (one object a line)
 struct Json {
@@ -51,14 +52,28 @@ bool single_instance(const char *title);                   // false: another lau
 void window_dark_title(SDL_Window *w);
 Lang system_lang();
 int logical_cpus();
+// ultratears-launcher.ini: lang ("" = the system's), dump (the folder with exefs and romfs), built (the package version
+// last built), updates ("off": no questions to GitHub), update_checked (unix time), update_* (a release found)
 struct Settings {
-    std::string lang;      // "" = the system's
-    std::string dump;      // the folder with exefs and romfs
-    std::string install;   // where the game is built ("" = the launcher's folder)
+    std::vector<std::pair<std::string, std::string>> kv;
+    std::string get(const char *key) const;
+    void set(const char *key, const std::string &value);
 };
 Settings settings_load();
 void settings_save(const Settings &s);
 bool start_game(const std::string &folder);                // UltraTears.exe in folder, detached
+void single_instance_release();
+bool restart_self();                                       // a new launcher started (after an update)
+
+// ---- update.cpp: new builder packages from GitHub Releases
+struct UpdateInfo { std::string version, name, url, sha256, page; uint64_t size = 0; };
+std::string package_version(const std::string &root);      // VERSION.txt of the package ("" in a source tree)
+void update_check_start(const std::string &current);       // the newest release, on a thread
+int update_check_poll(UpdateInfo *out);                    // 0 not yet, 1 a newer one, -1 none (or no answer)
+void update_download_start(const UpdateInfo &u, const std::string &dir);
+int update_download_poll(uint64_t *got, uint64_t *total, std::string *zip_or_error);   // 1 running, 2 done, 3 failed
+void update_download_cancel();
+void update_cleanup(const std::string &root);              // what the last update left (update\cleanup.txt)
 
 // ---- setup_proc.cpp: tools/setup.py as a child process, its lines read by a thread
 struct SetupProc;

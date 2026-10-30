@@ -127,4 +127,5 @@ It needs a complete build in the output folder (`dist\` by default; built elsewh
 <folder>`, pass `--home <folder>`) and a clean working tree,
 and writes `dev-local\dist\UltraTears-builder-<version>-windows-x86_64.zip`: the public tree of HEAD, the part of MSYS2 CLANG64 the build
 reads (measured from ninja's dependency records and the linker's trace), Python 3.14 with the packages above,
-`ultrs-shaders.exe`, `setup.bat`, and the licenses of all of it.
+`ultrs-shaders.exe`, `UltraTears Launcher.exe` (built by `tools/build_launcher.py`), `package-files.txt` (what the
+launcher's updates replace, `tools/apply_update.py`), and the licenses of all of it.

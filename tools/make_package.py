@@ -13,7 +13,9 @@ and objects tell which parts of clang64 the build reads) and tools/build_xlate.p
   - deps/python: Python 3.14 (the given install, default the one running this) without its tests, docs and Tk, with
     the packages the build imports (lz4, capstone, unicorn) from this project's .venv;
   - deps/shaders/ultrs-shaders.exe, the shader translator (tools/build_xlate.py);
-  - setup.bat, VERSION.txt and THIRD-PARTY-NOTICES.md.
+  - UltraTears Launcher.exe (tools/build_launcher.py), the window that builds and starts the game; no .bat;
+  - VERSION.txt, THIRD-PARTY-NOTICES.md and package-files.txt (every file of the package: what
+    tools/apply_update.py replaces and removes when the launcher updates it).
 Refuses a dirty working tree: the package must be the commit it names.
 """
 import argparse
@@ -44,35 +46,6 @@ LICENSES = ['clang', 'clang-libs', 'compiler-rt', 'crt', 'headers', 'libc++', 'l
 PY_PACKAGES = ['lz4', 'capstone', 'unicorn']
 PY_SKIP = {'test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'lib2to3', '__pycache__'}
 
-SETUP_BAT = r'''@echo off
-rem UltraTears: build the game from your own dump. Put your extracted exefs and romfs folders into game\ here and
-rem run this file (or drag a dump folder kept elsewhere onto it). Run it again to resume, or after an update.
-cd /d "%~dp0"
-if "%~1"=="" (
-  "deps\python\python.exe" tools\setup.py
-) else (
-  "deps\python\python.exe" tools\setup.py --dump "%~1"
-)
-echo.
-pause
-'''
-
-
-GAME_TXT = '''Put your own extracted copy of The Legend of Zelda: Tears of the Kingdom, update 1.4.3 applied, here:
-
-  game\\exefs\\   main, subsdk0, sdk, main.npdm, ...
-  game\\romfs\\   Actor\\, Pack\\, Shader\\, ... (about 304,000 files, 16 GB)
-
-then run setup.bat. After the build the game reads data\\romfs, so game\\romfs may be deleted. README.md has the details.
-
-Положите сюда свою извлечённую копию The Legend of Zelda: Tears of the Kingdom с обновлением 1.4.3:
-
-  game\\exefs\\   main, subsdk0, sdk, main.npdm, ...
-  game\\romfs\\   Actor\\, Pack\\, Shader\\, ... (около 304 000 файлов, 16 ГБ)
-
-и запустите setup.bat. После сборки игра читает data\\romfs, папку game\\romfs можно удалить. Подробнее — README.ru.md.
-'''
-
 
 NOTICES = '''# Third-party notices (builder package)
 
@@ -83,6 +56,7 @@ This package also carries tools to build it; each keeps its license, copied into
 |---|---|---|---|
 | deps/clang64 | Parts of MSYS2 CLANG64: LLVM clang, lld, libc++, libunwind, compiler-rt (Apache-2.0 WITH LLVM-exception); mingw-w64 headers, CRT and winpthreads (ZPL / MIT / public domain); ninja (Apache-2.0); SDL3 (zlib); opus, libvpx, zstd (BSD); libiconv (LGPL-2.1+, linked statically: the objects to relink are made on your PC by the build itself); zlib, xz, libffi, libxml2 (their DLLs, loaded by clang); Vulkan headers (Apache-2.0 / MIT) | as listed | licenses/msys2/<package>/ |
 | deps/python | Python 3.14 (PSF License) with lz4 (BSD), capstone (BSD), unicorn (GPL-2.0) | as listed | licenses/Python.txt; each package's *.dist-info in deps/python/Lib/site-packages |
+| UltraTears Launcher.exe | The launcher: SDL3 (zlib), Dear ImGui (MIT), nanosvg (zlib), stb_image (MIT), the fonts Inter and Montserrat Alternates (SIL OFL 1.1), libc++ (Apache-2.0 WITH LLVM-exception) | as listed | licenses/msys2/SDL3, third_party/*/LICENSE*, assets/launcher/fonts/OFL-*.txt |
 | deps/shaders | ultrs-shaders: totk_xlate (MacNativeGames, MIT) around the Ryujinx 1.3.2 shader translator (MIT), published self-contained with the .NET runtime (MIT) | MIT | licenses/Ryujinx.txt, third_party/shader_translator/LICENSE |
 
 Sources: MSYS2 packages https://packages.msys2.org (CLANG64), Python https://www.python.org, Ryujinx
@@ -231,11 +205,14 @@ def main():
     (out / 'deps/installed.json').write_text(json.dumps({'python': 'package', 'clang64': 'package'}, indent=1))
     shutil.copy2(ROOT / 'third_party/maxwell_shader/LICENSE.txt', lic / 'Ryujinx.txt')
     shutil.copy2(a.python / 'LICENSE.txt', lic / 'Python.txt')
-    (out / 'setup.bat').write_text(SETUP_BAT.replace('\n', '\r\n'))
     (out / 'THIRD-PARTY-NOTICES.md').write_text(NOTICES)
-    (out / 'game').mkdir()
-    (out / 'game/PUT-YOUR-GAME-HERE.txt').write_text(GAME_TXT.replace('\n', '\r\n'), encoding='utf-8')
     (out / 'VERSION.txt').write_text(version.version_txt(a.version, commit))
+    # the launcher, built from this commit (it holds no code of the game: shipped built)
+    launcher = ROOT / 'dev-local/build/launcher-release'
+    subprocess.run([sys.executable, str(ROOT / 'tools/build_launcher.py'), '--out', str(launcher)], check=True)
+    shutil.copy2(launcher / 'UltraTears Launcher.exe', out / 'UltraTears Launcher.exe')
+    files = sorted(f.relative_to(out).as_posix() for f in out.rglob('*') if f.is_file()) + ['package-files.txt']
+    (out / 'package-files.txt').write_text('\n'.join(sorted(files)) + '\n', encoding='utf-8')
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
     print(f'{out}: {size / 2**20:.0f} MiB, {len(used)} files of clang64')
     if not a.no_zip:

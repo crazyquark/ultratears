@@ -95,53 +95,43 @@ Extract the **entire archive** into its own folder, for example:
 D:\Games\UltraTears
 ```
 
-Do not run files from inside the ZIP. After extraction, `setup.bat` and the `deps`, `tools` and `game` folders should
-be next to one another.
+The game is built and installed in this folder, so choose a drive with at least 40 GB free. Do not run files from
+inside the ZIP.
 
-### 2. Put the game dump in `game`
+### 2. Start UltraTears Launcher
 
-The layout should be:
+Double-click `UltraTears Launcher.exe` in that folder.
 
-```text
-D:\Games\UltraTears\
-├── setup.bat
-├── deps\
-├── tools\
-└── game\
-    ├── exefs\
-    └── romfs\
-```
+> **Windows SmartScreen or an antivirus may warn about it.** The launcher is free open-source software without a paid
+> code-signing certificate, so Windows does not know its publisher yet. In the blue "Windows protected your PC" window
+> click **More info → Run anyway**. If an antivirus quarantines the launcher or files in `deps`, restore them and add
+> the folder to its exclusions: the builder compiles programs on your PC, which some antiviruses find suspicious. The
+> launcher's source is in `src/launcher`, and the Releases page shows the SHA-256 of every file.
 
-If the dump already lives elsewhere, you do not need to copy 16 GB: drag the folder that contains `exefs` and `romfs`
-onto `setup.bat`.
+### 3. Choose the game folder and prepare the game
 
-### 3. Run the build
+In the launcher, choose the folder that contains `exefs` and `romfs`, or drag it onto the window. It can be anywhere:
+nothing is copied into it, and the launcher also finds the dump one folder above or below. The launcher checks the
+version and your PC; then click **Prepare the game**:
 
-Double-click `setup.bat` and leave its window open. The builder runs these steps in order:
-
-| Step | What happens | Approximate time on 8 cores |
+| Step in the launcher | What happens | Approximate time on 8 cores |
 |---|---|---|
-| `check` | The folder structure and exact game version 1.4.3 are checked | seconds |
-| `romfs` | 304,000 files are packed into `data\romfs\romfs.bin` | ~4 min |
-| `lift` | Game code from the ExeFS is translated to C | ~2 min |
-| `compile` | The game code and port are compiled into `UltraTears.exe` | ~15 min |
-| `shaders` | The shaders are translated for Vulkan | ~3 min |
-| `textures` | The textures are converted to BC7/BC1 | ~7 min |
-| `finish` | The launch configuration is written | seconds |
+| Hardware check | The graphics card, memory and disk space; the exact game version 1.4.3 | seconds |
+| Copying the game data | 304,000 files are packed into `data\romfs\romfs.bin` | ~4 min |
+| Translating the game code | Game code from the ExeFS is translated to C | ~2 min |
+| Building the game | The game code and port are compiled into `UltraTears.exe` | ~15 min |
+| Preparing the graphics | The shaders are translated for Vulkan | ~3 min |
+| Compressing textures | The textures are converted to BC7/BC1 | ~7 min |
 
-Times depend on the CPU, disk and antivirus. The build is complete only after the `Done` message. If the PC shuts down
-or the window closes, run `setup.bat` again; completed work is reused.
+Times depend on the CPU, disk and antivirus. The window may be minimized. If the PC shuts down or the launcher is
+closed, start it again and click **Continue preparing**: completed work is reused. If preparing stops with an error,
+**Open the log folder** shows `ultratears-setup.log`; attach it to an issue.
 
-### 4. Start the game
+### 4. Play
 
-Run:
-
-```text
-D:\Games\UltraTears\UltraTears.exe
-```
-
-Do not move the EXE by itself. It needs `ultratears.cfg` and the `data` folder beside it. Saves are stored in
-`userdata`; keep that folder when moving or updating the game.
+Click **Play** in the launcher, or run `UltraTears.exe` in the same folder. Do not move the EXE by itself: it needs
+`ultratears.cfg` and the `data` folder beside it. Saves are stored in `userdata`; keep that folder when moving the
+game.
 
 ## Method 2 — build the current GitHub source
 
@@ -229,8 +219,10 @@ Shift = ZL / ZR, Enter = +, Tab / Esc = − (map), T F G H = d-pad, Z / C = stic
 full screen. Xbox, DualSense, Switch Pro and other controllers work through SDL3. The face-button layout follows the
 Switch: A is the right button.
 
-To update a Releases build, extract the new builder package over the old folder and run `setup.bat` again. Keep
-`userdata` to preserve saves. For a Git build, run `git pull`, then repeat the same `python tools/setup.py` command and
+A Releases build updates itself: once a day the launcher asks GitHub Releases for a newer version and offers it.
+**Update** downloads the new builder, checks its size and SHA-256, puts it in place of the old one (`data`, `build`
+and `userdata` stay) and rebuilds only what changed. `updates=off` in `ultratears-launcher.ini` turns the check off.
+From 0.2.0 or older (no launcher yet), extract the new package over the old folder and start the launcher. For a Git build, run `git pull`, then repeat the same `python tools/setup.py` command and
 options.
 
 > **Steam Deck and Linux are not supported yet.** Through Proton the Windows build starts, but runs at a few frames
@@ -247,8 +239,8 @@ options.
 - `encrypted packages are not accepted` — `.nsp`, `.xci` or `.nca` was supplied instead of ordinary `exefs` and
   `romfs` folders.
 - A Vulkan error or black window — update the graphics driver; Vulkan 1.3 with `VK_EXT_shader_object` is required.
-- After correcting the cause, run the same command or `setup.bat` again. You do not need to repeat successful steps
-  manually.
+- After correcting the cause, start the launcher again (Releases) or run the same command (Git). You do not need to
+  repeat successful steps manually.
 
 ## Legal
 

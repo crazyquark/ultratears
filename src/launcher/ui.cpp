@@ -179,7 +179,7 @@ static void globe(float x, float y, ImU32 col) {   // 14x14: a circle, the equat
 }
 
 // ---------------------------------------------------------------- state
-enum Screen { SCR_DUMP, SCR_BUILD, SCR_HW, SCR_PLAY };
+enum Screen { SCR_DUMP, SCR_BUILD, SCR_HW, SCR_PLAY, SCR_UPDATE };
 enum DumpState { D_NONE, D_CHECKING, D_BAD, D_OK };
 enum RowState { R_PENDING, R_RUN, R_DONE, R_WARN, R_ERROR };
 
@@ -188,9 +188,10 @@ struct Row { const char *id, *name; RowState st = R_PENDING; double secs = -1; b
 static struct {
     Screen screen = SCR_DUMP;
     Settings set;
-    std::string root;          // the folder with tools/setup.py
-    bool checkout = false;     // a Git checkout: setup copies the source into the install folder (--output)
-    std::string install;
+    std::string root;          // the builder package: tools/setup.py, deps/python, the launcher itself
+    std::string install;       // where the game is built: the package folder (setup.py builds in place)
+    std::string dump;          // the folder with exefs and romfs (settings: dump)
+    std::string version;       // of the package (VERSION.txt)
     // the dump folder screen
     DumpState dump_st = D_NONE;
     std::string dump_code;
@@ -212,16 +213,26 @@ static struct {
     // folder dialogs answer on another thread
     SDL_Mutex *lock = nullptr;
     std::string picked;
-    int picked_for = 0;       // 1 the dump, 2 the install folder
-    bool stopping = false;      // Stop pressed: the build is being killed
+    int picked_for = 0;       // 1 the dump
+    bool stopping = false;    // Stop pressed: the build is being killed
+    // updates
+    UpdateInfo upd;
+    bool has_upd = false;
+    int upd_st = 0;           // 0 asked to update? 1 downloading, 2 putting in place, 3 failed
+    std::string upd_err;
+    SetupProc *apply = nullptr;
+    double apply_frac = 0;
 } U;
 
 static std::string log_path() { return path_join(U.install, "ultratears-setup.log"); }
 static bool installed() { return path_is_file(path_join(U.install, "UltraTears.exe")) && path_is_file(path_join(U.install, "ultratears.cfg")); }
 static bool started_before() { return path_is_file(path_join(U.install, "data/setup.json")) && !installed(); }
+// built by an older package (an update came since): the next build redoes only what changed
+static bool stale() { return installed() && !U.version.empty() && U.set.get("built") != U.version; }
 
 static void save() {
-    U.set.lang = lang_code(g_lang);
+    U.set.set("lang", lang_code(g_lang));
+    U.set.set("dump", U.dump);
     settings_save(U.set);
 }
 
@@ -233,8 +244,11 @@ static void check_dump(const std::string &path) {
     std::string py = python_path(U.root);
     U.checking = path;
     U.dump_st = D_CHECKING;
-    U.check = setup_start({py.empty() ? "python" : py, path_join(U.root, "tools/setup.py"), "--check-dump", path, "--json"},
-                          U.root, "");
+    if (py.empty()) {
+        U.dump_st = D_BAD, U.dump_code = "no_python", U.dump_args = Json();
+        return;
+    }
+    U.check = setup_start({py, path_join(U.root, "tools/setup.py"), "--check-dump", path, "--json"}, U.root, "");
 }
 
 static void SDLCALL folder_picked(void *which, const char *const *files, int) {
@@ -290,17 +304,15 @@ static void start_build() {
     start_build_state();
     SDL_CreateDirectory(U.install.c_str());
     std::string py = python_path(U.root);
-    if (py.empty() && !U.checkout) {
+    if (py.empty()) {
         U.screen = SCR_BUILD;
         U.failed = true;
         U.fail_text = T("no_python");
         return;
     }
     const char *cpus = SDL_getenv("ULTRS_LAUNCHER_CPUS");   // development: test builds leave the PC half free
-    std::vector<std::string> args = {py.empty() ? "python" : py, path_join(U.root, "tools/setup.py"), "--json",
-                                     "--cpus", cpus && *cpus ? cpus : std::to_string(logical_cpus()), "--dump", U.set.dump};
-    if (U.checkout)
-        args.insert(args.end(), {"--output", U.install});
+    std::vector<std::string> args = {py, path_join(U.root, "tools/setup.py"), "--json",
+                                     "--cpus", cpus && *cpus ? cpus : std::to_string(logical_cpus()), "--dump", U.dump};
     U.build = setup_start(args, U.root, log_path());
     U.screen = SCR_BUILD;
 }
@@ -369,6 +381,8 @@ static void on_event(const Json &e) {
         }
     } else if (ev == "done") {
         U.done = true;
+        U.set.set("built", U.version);   // the game matches this package: Play, until the next update
+        save();
         for (Row &r : U.rows)
             if (r.st == R_PENDING || r.st == R_RUN)
                 r.st = R_DONE;
@@ -377,7 +391,68 @@ static void on_event(const Json &e) {
     }
 }
 
+static void poll_update() {
+    UpdateInfo found;
+    if (update_check_poll(&found) == 1 && found.version != U.version) {
+        U.upd = found;
+        U.has_upd = true;
+        U.set.set("update_version", found.version), U.set.set("update_name", found.name);
+        U.set.set("update_url", found.url), U.set.set("update_sha256", found.sha256);
+        U.set.set("update_size", std::to_string(found.size)), U.set.set("update_page", found.page);
+        save();
+        if (SDL_getenv("ULTRS_LAUNCHER_DEMO") && SDL_strcmp(SDL_getenv("ULTRS_LAUNCHER_DEMO"), "update") == 0) {
+            U.screen = SCR_UPDATE, U.upd_st = 1;   // development: the whole update without a click
+            update_download_start(U.upd, path_join(U.root, "update"));
+        }
+    }
+    if (U.upd_st == 1) {
+        std::string res;
+        int st = update_download_poll(nullptr, nullptr, &res);
+        if (st == 3) {
+            U.upd_st = 3, U.upd_err = res;
+        } else if (st == 2) {   // checked: put it in place with the package's Python, the launcher restarts after
+            U.upd_st = 2, U.apply_frac = 0;
+            U.apply = setup_start({python_path(U.root), path_join(U.root, "tools/apply_update.py"), res, "--root", U.root},
+                                  U.root, path_join(U.root, "update/update.log"));
+        }
+    }
+    if (U.apply) {
+        std::string line;
+        bool ok = false;
+        while (setup_line(U.apply, line)) {
+            Json e;
+            if (line.empty() || line[0] != '{' || !json_parse(line, e))
+                continue;
+            std::string ev = e["ev"].str();
+            if (ev == "progress" && e["total"].num() > 0)
+                U.apply_frac = e["done"].num() / e["total"].num();
+            else if (ev == "error")
+                U.upd_err = e["message"].str();
+            else if (ev == "done")
+                ok = true;
+        }
+        static bool applied = false;
+        applied = applied || ok;
+        int code;
+        if (setup_finished(U.apply, &code)) {
+            setup_free(U.apply);
+            U.apply = nullptr;
+            if (applied && code == 0 && restart_self()) {
+                SDL_Event q = {};
+                q.type = SDL_EVENT_QUIT;
+                SDL_PushEvent(&q);
+            } else {
+                U.upd_st = 3;
+                if (U.upd_err.empty())
+                    U.upd_err = applied ? T("upd_restart") : "apply_update.py: exit code " + std::to_string(code);
+            }
+            applied = false;
+        }
+    }
+}
+
 static void poll() {
+    poll_update();
     SDL_LockMutex(U.lock);
     std::string picked = U.picked;
     int which = U.picked_for;
@@ -386,11 +461,6 @@ static void poll() {
     SDL_UnlockMutex(U.lock);
     if (which == 1)
         check_dump(picked);
-    else if (which == 2) {
-        U.install = picked;
-        U.set.install = picked;
-        save();
-    }
 
     if (U.check) {
         std::string line;
@@ -399,7 +469,7 @@ static void poll() {
             if (json_parse(line, e) && e["ev"].str() == "dump") {
                 if (e["ok"].truth()) {
                     U.dump_st = D_OK;
-                    U.set.dump = e["path"].str();
+                    U.dump = e["path"].str();
                     save();
                 } else {
                     U.dump_st = D_BAD;
@@ -452,6 +522,8 @@ static double overall() {
 }
 
 // ---------------------------------------------------------------- screens
+static void update_banner(float right);
+
 static void header(bool lang) {
     icon(g_media.emblem, 36, 20);
     ImFont *b = g_media.brand;
@@ -461,6 +533,7 @@ static void header(bool lang) {
     const char *name = lang_name(g_lang);
     float w = 26 + 14 + 6 + text_w(g_media.medium, name);
     float x = 764 - w;
+    update_banner(x);
     bool hov, down;
     if (hit("lang", x, 24, w, 32, &hov, &down))
         ImGui::OpenPopup("langs");
@@ -510,7 +583,7 @@ static void screen_dump() {
     if (U.dump_st == D_NONE || U.dump_st == D_CHECKING) {
         bool busy = U.dump_st == D_CHECKING;
         if (hit("pick", 36, y, 728, 88, &hov, &down, !busy))
-            pick_folder(1, U.set.dump);
+            pick_folder(1, U.dump);
         DL->AddRectFilled(P(36, y), P(764, y + 88), down ? C_CARD : hov ? C_CARD_HOVER : C_CARD, 10 * S);
         const char *label = busy ? T("checking") : T("choose_folder");
         if (!busy)
@@ -532,8 +605,7 @@ static void screen_dump() {
             pick_folder(1, U.checking);
         y += 56;
         icon(g_media.error, 52, y + 2);
-        text(g_media.regular, 76, y, C_TEXT, head.c_str());
-        y += 24;
+        y += rich(g_media.regular, 76, y, 660, {{head.c_str(), C_TEXT}}) + 2;
         if (has_text(detail.c_str())) {
             std::string d = Tf(detail.c_str(), U.dump_args);
             y += rich(g_media.regular, 76, y, 660, {{d.c_str(), C_SUB}});
@@ -547,10 +619,10 @@ static void screen_dump() {
     float top = y;
     text(g_media.small, 52, y + 14, C_SUB, T("dump_label"));
     float cw = text_w(g_media.medium, T("change")) + 32, pw = 0;
-    path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 40, U.set.dump, &pw);
+    path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 40, U.dump, &pw);
     icon(g_media.check, 52 + pw + 8, y + 39);
     if (button("dump_change", T("change"), 748 - cw, y + 14, cw, 40, DARK))
-        pick_folder(1, U.set.dump);
+        pick_folder(1, U.dump);
     DL->ChannelsSetCurrent(0);
     DL->AddRectFilled(P(36, top), P(764, top + 68), C_CARD, 10 * S);
     DL->ChannelsSetCurrent(1);
@@ -558,9 +630,8 @@ static void screen_dump() {
     y = top + 76;
     top = y;
     text(g_media.small, 52, y + 14, C_TEXT, T("install_label"));
-    path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 16, U.install);
-    if (button("inst_change", T("change"), 748 - cw, y + 12, cw, 40, DARK))
-        pick_folder(2, U.install);
+    // [temporary] the package folder itself: setup.py builds in place (another folder: waits for the user's choice)
+    path_text(g_media.regular, 52, y + 38, 700, U.install);
     double need = 40, free = disk_free_gb(U.install);
     double est = est_total_secs() / 60;
     long lo = (long)(est * 0.85 / 5) * 5, hi = ((long)(est * 1.15) + 4) / 5 * 5;
@@ -574,7 +645,7 @@ static void screen_dump() {
         std::string ns = Tf("no_space", {{"drive", drive_of(U.install)}});
         y += rich(g_media.small, 52, y, 700, {{need_s.c_str(), C_ERR}, {(" " + ns).c_str(), C_ERR}});
     }
-    std::string del = Tf("can_delete", {{"dump", U.set.dump}});
+    std::string del = Tf("can_delete", {{"dump", U.dump}});
     y += rich(g_media.small, 52, y, 700, {{del.c_str(), C_SUB}});
     DL->ChannelsSetCurrent(0);
     DL->AddRectFilled(P(36, top), P(764, y + 14), C_CARD, 10 * S);
@@ -584,13 +655,13 @@ static void screen_dump() {
 static void screen_dump_footer() {
     if (U.dump_st != D_OK)
         return;
-    bool resume = started_before();
-    const char *label = resume ? T("resume") : T("prepare");
+    bool resume = started_before(), rebuild = stale();
+    const char *label = rebuild ? T("rebuild") : resume ? T("resume") : T("prepare");
     float w = SDL_max(196.0f, text_w(g_media.medium, label) + 48);
     double free = disk_free_gb(U.install);
     bool space = free < 0 || free >= 40 || installed() || resume;
-    if (resume)
-        rich(g_media.small, 36, 418, 764 - w - 36 - 24, {{T("resume_hint"), C_SUB}});
+    if (resume || rebuild)
+        rich(g_media.small, 36, 418, 764 - w - 36 - 24, {{T(rebuild ? "rebuild_hint" : "resume_hint"), C_SUB}}, 17);
     if (button("prepare", label, 764 - w, 408, w, 48, PRIMARY, space))
         start_build();
 }
@@ -750,6 +821,74 @@ static void screen_play() {
     rich(g_media.regular, 36, y, 700, {{sub.c_str(), C_SUB}});
 }
 
+static void screen_update() {
+    float y = title(88, Tf("upd_title", {{"v", U.upd.version}}).c_str(), nullptr) + 6;
+    std::string from = Tf("upd_from", {{"old", U.version}, {"v", U.upd.version}});
+    y += rich(g_media.regular, 36, y, 700, {{from.c_str(), C_SUB}, {" ", C_SUB}, {T("upd_notes"), C_TEXT, U.upd.page.c_str()}});
+    y += 22;
+    if (U.upd_st == 1 || U.upd_st == 2) {
+        uint64_t got = 0, total = 0;
+        update_download_poll(&got, &total, nullptr);
+        double f = U.upd_st == 1 ? (total ? (double)got / total : 0) : U.apply_frac;
+        char amount[64];
+        if (U.upd_st == 1)
+            SDL_snprintf(amount, sizeof amount, "%.0f / %.0f MB", got / 1048576.0, total / 1048576.0);
+        else
+            SDL_snprintf(amount, sizeof amount, "%d%%", (int)(f * 100));
+        text(g_media.regular, 36, y, C_TEXT, T(U.upd_st == 1 ? "upd_download" : "upd_apply"));
+        text(g_media.regular, 764 - text_w(g_media.regular, amount), y, C_TEXT, amount);
+        y += 26;
+        DL->AddRectFilled(P(36, y), P(764, y + 8), C_BAR, 4 * S);
+        if (f > 0)
+            DL->AddRectFilled(P(36, y), P(36 + 728 * (float)f, y + 8), C_BAR_FILL, 4 * S);
+        y += 30;
+        rich(g_media.small, 36, y, 728, {{T("upd_keep"), C_SUB}});
+    } else if (U.upd_st == 3) {
+        icon(g_media.error, 36, y + 2);
+        text(g_media.regular, 60, y, C_TEXT, T("upd_failed"));
+        y += 24;
+        rich(g_media.regular, 60, y, 700, {{U.upd_err.c_str(), C_SUB}});
+    } else {
+        rich(g_media.regular, 36, y, 700, {{T("upd_what"), C_SUB}});
+    }
+}
+
+static void screen_update_footer() {
+    if (U.upd_st == 2)
+        return;   // files are being replaced: no way back halfway (a second try would finish it)
+    if (U.upd_st == 1) {
+        float w = text_w(g_media.medium, T("cancel")) + 40;
+        if (button("upd_cancel", T("cancel"), 36, 416, w, 40, DARK)) {
+            update_download_cancel();
+            U.upd_st = 0;
+            U.screen = installed() && !stale() ? SCR_PLAY : SCR_DUMP;
+        }
+        return;
+    }
+    float w1 = SDL_max(160.0f, text_w(g_media.medium, T("upd_go")) + 48), w2 = text_w(g_media.medium, T("upd_later")) + 40;
+    if (button("upd_go", T(U.upd_st == 3 ? "upd_retry" : "upd_go"), 764 - w1, 408, w1, 48, PRIMARY)) {
+        U.upd_err.clear();
+        U.upd_st = 1;
+        update_download_start(U.upd, path_join(U.root, "update"));
+    }
+    if (button("upd_later", T("upd_later"), 764 - w1 - 12 - w2, 408, w2, 48, DARK)) {
+        U.upd_st = 0;
+        U.screen = installed() && !stale() ? SCR_PLAY : SCR_DUMP;
+    }
+}
+
+// "Version X is out — Update" next to the language button, while nothing is being built
+static void update_banner(float right) {
+    if (!U.has_upd || (U.screen != SCR_DUMP && U.screen != SCR_PLAY))
+        return;
+    std::string t = Tf("upd_banner", {{"v", U.upd.version}});
+    const char *go = T("upd_open");
+    float bw = text_w(g_media.medium, go) + 28, x = right - 12 - bw;
+    text(g_media.small, x - 10 - text_w(g_media.small, t.c_str()), 40 - g_media.small->FontSize / S / 2, C_SUB, t.c_str());
+    if (button("upd_banner", go, x, 24, bw, 32, PRIMARY))
+        U.screen = SCR_UPDATE;
+}
+
 static bool g_play_failed = false;
 static void screen_play_footer() {
     if (g_play_failed)
@@ -774,20 +913,40 @@ void ui_init(SDL_Window *w) {
     g_win = w;
     U.lock = SDL_CreateMutex();
     U.set = settings_load();
-    g_lang = U.set.lang.empty() ? system_lang() : lang_from_code(U.set.lang.c_str());
-    // the folder with tools/setup.py: the launcher's own (a builder package), else ULTRS_ROOT (development)
+    std::string lang = U.set.get("lang");
+    g_lang = lang.empty() ? system_lang() : lang_from_code(lang.c_str());
+    U.dump = U.set.get("dump");
+    // The builder package the launcher lies in: the game is built there (setup.py in place). ULTRS_ROOT: development,
+    // a package or a folder made by setup.py --output elsewhere. A source checkout has no launcher: setup.py there.
     U.root = exe_dir();
     const char *root = SDL_getenv("ULTRS_ROOT");
-    if (!path_is_file(path_join(U.root, "tools/setup.py")) && root && *root)
+    if (root && *root)
         U.root = root;
-    U.checkout = path_is_dir(path_join(U.root, ".git"));
-    const char *inst = SDL_getenv("ULTRS_INSTALL");
-    U.install = !U.set.install.empty() ? U.set.install : inst && *inst ? inst : U.checkout ? path_join(U.root, "dist") : U.root;
 #ifdef _WIN32
-    for (char &c : U.install)   // a path from the environment may have forward slashes: shown as Windows writes them
+    for (char &c : U.root)   // shown as Windows writes paths
         if (c == '/')
             c = '\\';
 #endif
+    U.install = U.root;
+    U.version = package_version(U.root);
+    update_cleanup(U.root);
+    // updates: one question to GitHub a day at most; a release found stays offered until it is installed
+    U.upd.version = U.set.get("update_version");
+    if (!U.upd.version.empty() && U.upd.version != U.version && !U.version.empty()) {
+        U.upd.name = U.set.get("update_name"), U.upd.url = U.set.get("update_url");
+        U.upd.sha256 = U.set.get("update_sha256"), U.upd.page = U.set.get("update_page");
+        U.upd.size = SDL_strtoull(U.set.get("update_size").c_str(), nullptr, 10);
+        U.has_upd = !U.upd.url.empty() && !U.upd.sha256.empty();
+    }
+    long long checked = SDL_strtoll(U.set.get("update_checked").c_str(), nullptr, 10);
+    SDL_Time now = 0;
+    SDL_GetCurrentTime(&now);
+    long long secs = (long long)(now / SDL_NS_PER_SECOND);
+    if (U.set.get("updates") != "off" && !U.version.empty() && (secs - checked > 24 * 3600 || secs < checked)) {
+        U.set.set("update_checked", std::to_string(secs));
+        settings_save(U.set);
+        update_check_start(U.version);
+    }
     ImGuiStyle &st = ImGui::GetStyle();
     st.WindowPadding = ImVec2(0, 0);
     st.WindowBorderSize = 0;
@@ -803,10 +962,10 @@ void ui_init(SDL_Window *w) {
     st.Colors[ImGuiCol_NavCursor] = ImVec4(0, 0, 0, 0);   // the focus frame is drawn by hit()
     st.PopupRounding = 6;
     st.WindowRounding = 6;
-    if (installed() && !U.set.dump.empty())
+    if (installed() && !U.dump.empty() && !stale())
         U.screen = SCR_PLAY;
-    else if (!U.set.dump.empty())
-        check_dump(U.set.dump);
+    else if (!U.dump.empty())
+        check_dump(U.dump);
 }
 
 void ui_frame(float scale) {
@@ -834,6 +993,7 @@ void ui_frame(float scale) {
     case SCR_BUILD: screen_build(); break;
     case SCR_HW: screen_hw(); break;
     case SCR_PLAY: screen_play(); break;
+    case SCR_UPDATE: screen_update(); break;
     }
     DL->ChannelsMerge();
     ImGui::EndChild();
@@ -844,6 +1004,7 @@ void ui_frame(float scale) {
     case SCR_DUMP: screen_dump_footer(); break;
     case SCR_BUILD: screen_build_footer(); break;
     case SCR_PLAY: screen_play_footer(); break;
+    case SCR_UPDATE: screen_update_footer(); break;
     default: break;
     }
     header(lang);   // last: the language list lies over the body
@@ -867,8 +1028,16 @@ void ui_demo(const char *name) {
     }
     U.screen = SCR_DUMP;
     U.dump_st = D_NONE;
-    if (U.set.dump.empty())
-        U.set.dump = "D:\\Games\\Original";
+    if (U.dump.empty() && n != "update" && n != "run")   // sample screens only: never saved over a real choice
+        U.dump = "D:\\Games\\Original";
+    if (n == "update")
+        return;   // poll_update starts it once GitHub answers
+    if (n == "update_ask") {
+        U.upd.version = "0.3.0", U.upd.page = ULTRS_REPO "/releases";
+        U.version = U.version.empty() ? "0.2.0" : U.version;
+        U.has_upd = true, U.upd_st = 0, U.screen = SCR_UPDATE;
+        return;
+    }
     if (n == "dump_bad") {
         U.dump_st = D_BAD, U.dump_code = "dump_version", U.checking = "D:\\Games\\Original";
     } else if (n == "dump_ok") {
@@ -906,6 +1075,8 @@ void ui_drop(const char *path) {
 }
 
 bool ui_close_request() {
+    if (U.apply)
+        return false;   // files of the package are being replaced: a few seconds
     if (!U.build || U.done || U.failed || U.stopping)
         return true;
     U.screen = SCR_BUILD;

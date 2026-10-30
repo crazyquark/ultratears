@@ -17,7 +17,7 @@ import version  # noqa: E402
 
 EXE = 'UltraTears Launcher.exe'
 SOURCES = ['src/launcher/main.cpp', 'src/launcher/ui.cpp', 'src/launcher/setup_proc.cpp', 'src/launcher/platform.cpp',
-           'src/launcher/text.cpp', 'src/launcher/json.cpp', 'src/launcher/media.cpp',
+           'src/launcher/text.cpp', 'src/launcher/json.cpp', 'src/launcher/media.cpp', 'src/launcher/update.cpp',
            'third_party/imgui/imgui.cpp', 'third_party/imgui/imgui_draw.cpp', 'third_party/imgui/imgui_tables.cpp',
            'third_party/imgui/imgui_widgets.cpp', 'third_party/imgui/backends/imgui_impl_sdl3.cpp',
            'third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp']
@@ -25,7 +25,7 @@ ASSETS = ['fonts/Inter_18pt-Regular.ttf', 'fonts/Inter_18pt-Medium.ttf', 'fonts/
           'fonts/MontserratAlternates-SemiBold.ttf', 'l_emblem.png', 'l_pattern.png', 'l_ic_check.svg', 'l_ic_error.svg',
           'l_ic_folder.svg', 'l_ic_warn.svg']
 LIBS = ('-static -mwindows -lSDL3 -luser32 -lgdi32 -limm32 -lole32 -loleaut32 -lversion -luuid -ladvapi32 -lsetupapi '
-        '-lshell32 -lwinmm -ldwmapi -liconv -lc++')
+        '-lshell32 -lwinmm -ldwmapi -lwinhttp -lbcrypt -liconv -lc++')
 
 
 def esc(path):   # a path in a ninja build line

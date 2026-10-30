@@ -17,6 +17,8 @@
 #endif
 
 #ifdef _WIN32
+static HANDLE g_instance;   // the one-instance mutex
+
 static std::wstring wide(const std::string &s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
     std::wstring w(n > 0 ? n - 1 : 0, L'\0');
@@ -108,7 +110,7 @@ void reveal_in_folder(const std::string &file) {
 
 bool single_instance(const char *title) {
 #ifdef _WIN32
-    CreateMutexW(nullptr, TRUE, L"Local\\UltraTearsLauncher");
+    g_instance = CreateMutexW(nullptr, TRUE, L"Local\\UltraTearsLauncher");
     if (GetLastError() != ERROR_ALREADY_EXISTS)
         return true;
     HWND other = FindWindowW(nullptr, wide(title).c_str());
@@ -175,20 +177,60 @@ Settings settings_load() {
         size_t eq = line.find('=');
         if (eq == std::string::npos || line[0] == '#')
             continue;
-        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-        if (k == "lang")
-            s.lang = v;
-        else if (k == "dump")
-            s.dump = v;
-        else if (k == "install")
-            s.install = v;
+        s.set(line.substr(0, eq).c_str(), line.substr(eq + 1));
     }
     return s;
 }
 
 void settings_save(const Settings &s) {
-    std::string text = "# UltraTears Launcher\nlang=" + s.lang + "\ndump=" + s.dump + "\ninstall=" + s.install + "\n";
+    std::string text = "# UltraTears Launcher\n";
+    for (auto &kv : s.kv)
+        text += kv.first + "=" + kv.second + "\n";
     SDL_SaveFile(settings_path().c_str(), text.data(), text.size());
+}
+
+std::string Settings::get(const char *key) const {
+    for (auto &kv : this->kv)
+        if (kv.first == key)
+            return kv.second;
+    return "";
+}
+
+void Settings::set(const char *key, const std::string &value) {
+    for (auto &kv : this->kv)
+        if (kv.first == key) {
+            kv.second = value;
+            return;
+        }
+    kv.emplace_back(key, value);
+}
+
+void single_instance_release() {
+#ifdef _WIN32
+    if (g_instance)
+        CloseHandle(g_instance);
+    g_instance = nullptr;
+#endif
+}
+
+bool restart_self() {
+#ifdef _WIN32
+    wchar_t exe[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH * 2);
+    if (!n || n >= MAX_PATH * 2)
+        return false;
+    single_instance_release();   // the new launcher must not find this one running
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+#else
+    return false;   // [temporary] Linux: execv(/proc/self/exe) once there is a Linux launcher
+#endif
 }
 
 bool start_game(const std::string &folder) {
