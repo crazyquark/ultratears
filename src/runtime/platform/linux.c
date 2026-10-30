@@ -62,8 +62,10 @@ void plat_memory_map(void) {}
 // userfaultfd for asynchronous write protection (the kernel lifts a page's protection on its first write, without
 // stopping anyone), and PAGEMAP_SCAN reports the pages written since their last scan and protects them again in the
 // same call. The kernel's own writes (file reads into game memory) count too; GPU writes do not, as on Windows.
-// Without it (Linux before 6.7, or TOTK_WRITE_WATCH=0) nvn_dirty treats pools as untracked: textures the CPU updates
-// after their first upload, such as the font atlas, kept their first contents.
+// Opt-in (TOTK_WRITE_WATCH=1; Linux 6.7): on the Steam Deck it cannot work, because game memory is imported into
+// Vulkan and amdgpu re-maps that memory for writing after every protection change, so every page reads as written on
+// every scan (4 fps in the title menu). Without it nvn_dirty treats pools as untracked and vkb_tex.c compares texture
+// contents instead.
 static int g_uffd = -1, g_pagemap = -1;
 static uint64_t g_watch_lo, g_watch_hi;
 
@@ -79,7 +81,7 @@ static void watch_register(uint64_t lo, uint64_t hi) {
 
 static void watch_init(uint64_t lo, uint64_t hi) {
     const char *e = getenv("TOTK_WRITE_WATCH");
-    if (e && !strcmp(e, "0")) return;
+    if (!e || strcmp(e, "1")) return;
     // UFFD_USER_MODE_ONLY: allowed without privileges; asynchronous write faults never reach the userfaultfd anyway.
     int uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
     struct uffdio_api api = {.api = UFFD_API, .features = UFFD_FEATURE_WP_ASYNC};
