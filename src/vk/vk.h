@@ -23,7 +23,7 @@
     X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) \
     X(vkWaitSemaphores) X(vkGetSemaphoreCounterValue) X(vkMapMemory) X(vkUnmapMemory) \
     X(vkAllocateMemory) X(vkFreeMemory) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkBindBufferMemory) \
-    X(vkGetBufferMemoryRequirements) X(vkGetMemoryHostPointerPropertiesEXT) X(vkGetBufferDeviceAddress) \
+    X(vkGetBufferMemoryRequirements) X(vkGetMemoryHostPointerPropertiesEXT) X(vkGetMemoryFdKHR) X(vkGetBufferDeviceAddress) \
     X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkCreateImageView) \
     X(vkDestroyImageView) X(vkCmdBeginRendering) X(vkCmdEndRendering) X(vkCmdClearAttachments) X(vkCmdCopyImage) \
     X(vkCmdClearDepthStencilImage) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) \
@@ -63,6 +63,7 @@ typedef struct {
     int has_feedback_loop;   // VK_EXT_attachment_feedback_loop_layout + _dynamic_state: sampling a bound attachment
     int has_local_read;      // VK_KHR_dynamic_rendering_local_read: barriers inside a pass (draws reading what earlier draws wrote)
     VkPhysicalDeviceDescriptorBufferPropertiesEXT db;   // VK_EXT_descriptor_buffer: descriptor sizes, alignment, ranges
+    int has_dma_buf;         // VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf: guest memory backed by device memory (backend_vk.c)
     int has_checkpoints;     // TOTK_VK_CHECKPOINTS=1: VK_NV_device_diagnostic_checkpoints (where a lost device stopped)
 } VkContext;
 extern VkContext vkc;

@@ -137,6 +137,94 @@ static void backend_init(void) {
     pthread_mutex_unlock(&mu);
 }
 
+// ---- guest memory backed by device memory (Linux)
+// Imported game memory (VK_EXT_external_memory_host) is an amdgpu userptr BO, and the kernel walks every page of every
+// userptr BO on every submission (RADV puts every BO in every submission once buffer device addresses are in use): with
+// TOTK's ~1300 pools (1 GiB) an empty vkQueueSubmit took 12 ms, and there are two a frame (measured on the Steam Deck).
+// Instead the guest heap (5 GiB, set once at boot before anything is written there) and the alias region (in slabs,
+// when the game first maps memory into one) are backed by exported device memory (host visible, coherent, cached: the
+// CPU reads and writes it at full speed) mapped over the same addresses, and a pool inside a backing is a buffer at an
+// offset of it: no import. The few BOs of the backings cost about nothing per submission. A pool across a backing's
+// end cannot be imported either (dma-buf pages): logged. TOTK_VK_GUEST_BACKING=0: imports, as before.
+#ifdef __linux__
+int plat_map_fd(uint64_t lo, uint64_t size, int fd);   // platform/linux.c (closes fd)
+int close(int fd);   // (unistd.h is not reachable here: gfx_compat.h)
+typedef struct { uint64_t lo, hi; VkDeviceMemory mem; } backing_t;
+static backing_t g_back[512];
+static int g_nback;
+static pthread_mutex_t g_back_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static uint32_t backing_type(void) {
+    static uint32_t type = UINT32_MAX - 1;
+    if (type != UINT32_MAX - 1) return type;
+    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    type = UINT32_MAX;
+    for (uint32_t i = 0; i < vkc.memory.memoryTypeCount && type == UINT32_MAX; i++)   // system memory first
+        if ((vkc.memory.memoryTypes[i].propertyFlags & want) == want && !(vkc.memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) type = i;
+    for (uint32_t i = 0; i < vkc.memory.memoryTypeCount && type == UINT32_MAX; i++)
+        if ((vkc.memory.memoryTypes[i].propertyFlags & want) == want) type = i;
+    return type;
+}
+
+// The largest single allocation (maxMemoryAllocationSize, in 64 MiB steps): the heap is backed in pieces of this size.
+uint64_t mtl_guest_back_piece(void) {
+    VkPhysicalDeviceMaintenance3Properties m3 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &m3};
+    vk.vkGetPhysicalDeviceProperties2(vkc.gpu, &p2);
+    uint64_t n = m3.maxMemoryAllocationSize & ~((64ull << 20) - 1);
+    return n ? n : 1ull << 30;
+}
+
+// Guest [lo, hi) -> device memory mapped there. keep: the range holds data, copied over (only for a range nobody else
+// writes meanwhile: a pool being created); else nothing has been written there yet. 1: backed, 0: left as it is.
+static int guest_back(uint64_t lo, uint64_t hi, int keep) {
+    static int off = -1;
+    if (off < 0) { const char *e = getenv("TOTK_VK_GUEST_BACKING"); off = e && !strcmp(e, "0"); }
+    if (off || hi <= lo || ((lo | hi) & 0xfff)) return 0;
+    backend_init();
+    if (g_ok != 1 || !vkc.has_dma_buf || !vk.vkGetMemoryFdKHR || backing_type() == UINT32_MAX) return 0;
+    pthread_mutex_lock(&g_back_mu);
+    if (g_nback == (int)(sizeof g_back / sizeof *g_back)) { pthread_mutex_unlock(&g_back_mu); return 0; }
+    VkExportMemoryAllocateInfo ex = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateFlagsInfo fl = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, &ex, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &fl, .allocationSize = hi - lo, .memoryTypeIndex = backing_type()};
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    int fd = -1;
+    if (vk_check(vk.vkAllocateMemory(vkc.device, &ai, NULL, &mem), "guest memory backing")) {
+        VkMemoryGetFdInfoKHR gi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        if (!vk_check(vk.vkGetMemoryFdKHR(vkc.device, &gi, &fd), "guest memory backing fd")) fd = -1;
+    }
+    void *save = keep && fd >= 0 ? malloc(hi - lo) : NULL;
+    if (save) memcpy(save, (const void *)(uintptr_t)lo, hi - lo);
+    if (keep && !save) { if (fd >= 0) close(fd); fd = -1; }
+    if (fd < 0 || !plat_map_fd(lo, hi - lo, fd)) {
+        free(save);
+        if (mem) vk.vkFreeMemory(vkc.device, mem, NULL);
+        pthread_mutex_unlock(&g_back_mu);
+        VLOG("guest %#llx..%#llx: no device memory backing; its pools are imported", (unsigned long long)lo, (unsigned long long)hi);
+        return 0;
+    }
+    if (save) { memcpy((void *)(uintptr_t)lo, save, hi - lo); free(save); }
+    g_back[g_nback] = (backing_t){lo, hi, mem};
+    __atomic_store_n(&g_nback, g_nback + 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_back_mu);
+    VLOG("guest %#llx..%#llx (%.0f MiB): backed by device memory%s (%d backings)", (unsigned long long)lo, (unsigned long long)hi,
+         (hi - lo) / 1048576.0, keep ? ", contents kept" : "", g_nback);
+    return 1;
+}
+int mtl_guest_back(uint64_t lo, uint64_t hi) { return guest_back(lo, hi, 0); }
+
+static VkDeviceMemory backing_of(uint64_t a, uint64_t b, uint64_t *off, int *across) {
+    int n = __atomic_load_n(&g_nback, __ATOMIC_ACQUIRE);
+    *across = 0;
+    for (int i = n - 1; i >= 0; i--)   // newest first: a pool's own backing lies over the backings it crossed
+        if (a >= g_back[i].lo && b <= g_back[i].hi) { *off = a - g_back[i].lo; return g_back[i].mem; }
+    for (int i = 0; i < n; i++)
+        if (a < g_back[i].hi && g_back[i].lo < b) *across = 1;
+    return VK_NULL_HANDLE;
+}
+#endif
+
 void mtl_pool_add(const void *mem, uint64_t size) {
     backend_init();
     if (!g_ok || !mem || !size) return;
@@ -151,11 +239,25 @@ void mtl_pool_add(const void *mem, uint64_t size) {
 #else
     if (a >= GUEST_LO && b <= GUEST_HI) plat_commit(a, b - a);
 #endif
+    VkDeviceMemory shared = VK_NULL_HANDLE;   // the device memory backing the pool's guest memory (Linux), if any
+    uint64_t shared_off = 0;
+#ifdef __linux__
+    int across;
+    shared = backing_of(a, b, &shared_off, &across);
+    if (across) {   // over the end of a backing (one buffer cannot use two): a backing of its own, its contents kept
+        if (guest_back(a, b, 1)) shared = backing_of(a, b, &shared_off, &across);
+        if (!shared) {
+            static int said;
+            if (said++ < 16) VLOG("memory pool %p+%#llx crosses the end of a device memory backing: not usable by the GPU", mem, (unsigned long long)size);
+            return;
+        }
+    }
+#endif
     VkMemoryHostPointerPropertiesEXT hp = {VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    if (!vk_check(vk.vkGetMemoryHostPointerPropertiesEXT(vkc.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                                          (void *)a, &hp), "host pointer properties")) return;
+    if (!shared && !vk_check(vk.vkGetMemoryHostPointerPropertiesEXT(vkc.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                                     (void *)a, &hp), "host pointer properties")) return;
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+        .handleTypes = shared ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT : VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, .size = b - a,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
@@ -165,18 +267,28 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (!vk_check(vk.vkCreateBuffer(vkc.device, &bi, NULL, &buf), "pool buffer")) return;
     VkMemoryRequirements req;
     vk.vkGetBufferMemoryRequirements(vkc.device, buf, &req);
+    VkDeviceMemory dm = VK_NULL_HANDLE;   // owned by the pool (an import); a backing's memory stays
+    if (shared) {
+        if ((req.alignment && shared_off % req.alignment) ||
+            !vk_check(vk.vkBindBufferMemory(vkc.device, buf, shared, shared_off), "pool buffer in device memory backing")) {
+            VLOG("memory pool %p+%#llx: cannot be placed in its device memory backing", mem, (unsigned long long)size);
+            vk.vkDestroyBuffer(vkc.device, buf, NULL);
+            return;
+        }
+        goto bound;
+    }
     uint32_t type = memory_type(req.memoryTypeBits & hp.memoryTypeBits);
     VkImportMemoryHostPointerInfoEXT imp = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, .pHostPointer = (void *)a};
     VkMemoryAllocateFlagsInfo fl = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, &imp, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &fl, .allocationSize = b - a, .memoryTypeIndex = type};
-    VkDeviceMemory dm;
     if (type == UINT32_MAX || !vk_check(vk.vkAllocateMemory(vkc.device, &ai, NULL, &dm), "pool import")) {
         VLOG("memory pool %p+%#llx: cannot import (memory types %#x / %#x)", mem, (unsigned long long)size, req.memoryTypeBits, hp.memoryTypeBits);
         vk.vkDestroyBuffer(vkc.device, buf, NULL);
         return;
     }
     vk.vkBindBufferMemory(vkc.device, buf, dm, 0);
+bound:
     vkb_rw_write(&g_pool_mu, LK_POOLS);
     if (g_npools == g_capools) {
         g_capools = g_capools ? g_capools * 2 : 64;
@@ -197,7 +309,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         }
     g_pool_bytes += hi - lo;
     static unsigned said;
-    if (said++ < 4) VLOG("memory pool %p+%#llx imported (%d pools, %.1f MiB)", mem, (unsigned long long)size, g_npools, g_pool_bytes / 1048576.0);
+    if (said++ < 4) VLOG("memory pool %p+%#llx %s (%d pools, %.1f MiB)", mem, (unsigned long long)size, shared ? "in device memory" : "imported",
+                         g_npools, g_pool_bytes / 1048576.0);
     vkb_rw_write_end(&g_pool_mu);
 }
 
@@ -221,7 +334,7 @@ void mtl_pool_del(const void *mem) {
     // The frontend drains the queue before it deletes a pool (hle_nvn.c x_drain); the GPU may still be finishing.
     mtl_finish();
     vk.vkDestroyBuffer(vkc.device, e.buf, NULL);
-    vk.vkFreeMemory(vkc.device, e.mem, NULL);
+    if (e.mem) vk.vkFreeMemory(vkc.device, e.mem, NULL);   // (none for a pool in a device memory backing)
 }
 
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) { (void)p; (void)off; (void)n; }   // zero-copy: nothing cached
@@ -1340,6 +1453,17 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
             double f = (double)(n - pn);
             static uint64_t pparts, pgpu, pwait;
             VLOG("memory pools: %d imported, %.1f MiB", g_npools, (double)g_pool_bytes / 1048576.0);
+            {   // where they are (guest heap / alias region / elsewhere), and how many 64 MiB slabs they touch
+                uint64_t cnt[3] = {0}, bytes[3] = {0}, slabs = 0, last = 0;
+                for (int i = 0; i < g_npools; i++) {
+                    uint64_t lo = g_pools[i].lo, k = lo >= 0x1030000000ull && lo < 0x1180000000ull ? 0 : lo >= 0x7000000000ull && lo < 0x8000000000ull ? 1 : 2;
+                    cnt[k]++; bytes[k] += g_pools[i].hi - lo;
+                    for (uint64_t s = lo >> 26; s <= (g_pools[i].hi - 1) >> 26; s++) if (s != last) { slabs++; last = s; }
+                }
+                VLOG("memory pools by place: heap %llu / %.1f MiB, alias %llu / %.1f MiB, other %llu / %.1f MiB; 64 MiB slabs touched %llu",
+                     (unsigned long long)cnt[0], bytes[0] / 1048576.0, (unsigned long long)cnt[1], bytes[1] / 1048576.0,
+                     (unsigned long long)cnt[2], bytes[2] / 1048576.0, (unsigned long long)slabs);
+            }
             {
                 static uint64_t pct[32];
                 char cl[256]; int cn = 0;

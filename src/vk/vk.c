@@ -160,6 +160,7 @@ static VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT ffld = {VK_
 static int has_fl, has_fld;
 static VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR flr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
 static int has_lr;
+static int has_mem_fd, has_dma_buf_ext;
 
 static int create_device(void) {
     ExtList ex = device_extensions(vkc.gpu);
@@ -193,6 +194,9 @@ static int create_device(void) {
         {VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME, &ffld, &has_fld},
         // ...and a draw that samples a target earlier draws of the pass wrote waits for them inside the pass
         {VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME, &flr, &has_lr},
+        // guest memory backed by exported device memory mapped at the game's addresses (backend_vk.c mtl_guest_back)
+        {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, NULL, &has_mem_fd},
+        {VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, NULL, &has_dma_buf_ext},
         // development (TOTK_VK_CHECKPOINTS=1): the markers a lost device reached
         {VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, NULL, &vkc.has_checkpoints},
     };
@@ -205,6 +209,7 @@ static int create_device(void) {
         if (want[i].features) { *tail = want[i].features; tail = (void **)&((VkBaseOutStructure *)want[i].features)->pNext; }
     }
     free(ex.e);
+    vkc.has_dma_buf = has_mem_fd && has_dma_buf_ext;
     vk.vkGetPhysicalDeviceFeatures2(vkc.gpu, &f2);
     vkc.has_shader_object = vkc.has_shader_object && fso.shaderObject;
     if (!vkc.has_shader_object) {

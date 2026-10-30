@@ -619,6 +619,7 @@ static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     if (f->save) save_touched();
     uint64_t done = 0;
     while (done < size) {
+        guest_prepare_write((void *)((const uint8_t *)buffer + done), size - done);   /* (backed before the kernel reads it) */
         ssize_t n = pwrite(fd, (const uint8_t *)buffer + done, (size_t)(size - done), offset + (off_t)done);
         if (n <= 0) {
             fprintf(stderr, "[totk] save write at %#llx (%#llx bytes from %p) failed: errno %d\n",

@@ -42,6 +42,36 @@ static uint64_t main_stack_lo, main_stack_hi;
 static uint8_t *user_exception_context;
 static pthread_mutex_t memory_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Linux: guest memory backed by device memory (src/gfx/backend_vk.c), so that the GPU uses the game's memory without
+   importing it piece by piece. Weak: targets without the renderer leave memory as it is. */
+#ifdef __linux__
+int mtl_guest_back(uint64_t lo, uint64_t hi) __attribute__((weak));
+uint64_t mtl_guest_back_piece(void) __attribute__((weak));
+void plat_set_fault_hook(int (*fn)(uint64_t addr));
+#define ALIAS_SLAB (64ull << 20)
+static unsigned char alias_slab_state[ALIAS_SIZE / ALIAS_SLAB];   /* 0: not looked at, 1: backed, 2: left as it is */
+/* The heap (5 GiB) is backed in slabs as the game first touches them: all of it at once made the GPU memory manager
+   swap until the Deck froze. A new part of the heap is inaccessible; the first access to a slab faults, heap_fault
+   backs it (nothing was written there yet) and the access is retried. The kernel's own accesses take no fault:
+   guest_prepare_write / plat_commit touch their range first. */
+#define HEAP_SLAB (64ull << 20)
+static unsigned char heap_slab_state[HEAP_CAP / HEAP_SLAB + 1];   /* 0: plain memory, 1: backed on first touch, 2: done */
+static pthread_mutex_t heap_slab_lock = PTHREAD_MUTEX_INITIALIZER;
+static int heap_fault(uint64_t addr) {
+    if (addr < HEAP_START || addr >= HEAP_START + heap_size) return 0;
+    unsigned s = (unsigned)((addr - HEAP_START) / HEAP_SLAB);
+    if (__atomic_load_n(&heap_slab_state[s], __ATOMIC_ACQUIRE) != 1) return 0;   /* a real fault */
+    pthread_mutex_lock(&heap_slab_lock);
+    if (heap_slab_state[s] == 1) {
+        uint64_t lo = HEAP_START + s * HEAP_SLAB, hi = lo + HEAP_SLAB < HEAP_START + heap_size ? lo + HEAP_SLAB : HEAP_START + heap_size;
+        if (!mtl_guest_back(lo, hi)) plat_protect(lo, hi - lo, PLAT_PROT_RW);
+        __atomic_store_n(&heap_slab_state[s], 2, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&heap_slab_lock);
+    return 1;
+}
+#endif
+
 static void decommit(uint64_t addr, uint64_t size) {
 #ifdef _WIN32
     if (size && !VirtualFree((void *)(uintptr_t)addr, size, MEM_DECOMMIT)) runtime_fail("decommit guest pages");
@@ -134,6 +164,15 @@ static uint64_t alias_map(int unmap, uint64_t addr, uint64_t size) {
         pthread_mutex_unlock(&memory_lock);
         return 0x10801;
     }
+#ifdef __linux__
+    /* A slab no page of which was ever mapped holds nothing yet: backed by device memory as it is first mapped. */
+    for (uint64_t s = (addr - ALIAS_START) / ALIAS_SLAB; !unmap && mtl_guest_back && s <= (addr + size - 1 - ALIAS_START) / ALIAS_SLAB; s++) {
+        if (alias_slab_state[s]) continue;
+        unsigned p0 = (unsigned)(s * (ALIAS_SLAB / 4096)), used = 0;
+        for (unsigned i = 0; i < ALIAS_SLAB / 4096 && !used; i++) used = alias_pages[p0 + i];
+        alias_slab_state[s] = !used && mtl_guest_back(ALIAS_START + s * ALIAS_SLAB, ALIAS_START + (s + 1) * ALIAS_SLAB) ? 1 : 2;
+    }
+#endif
     if (unmap) {
         for (unsigned i = 0; i < nstack_maps; i++)
             if (overlaps(addr, size, stack_maps[i].src, stack_maps[i].size)) { pthread_mutex_unlock(&memory_lock); return 0xdc01; }
@@ -149,6 +188,10 @@ static uint64_t alias_map(int unmap, uint64_t addr, uint64_t size) {
         for (unsigned i = 0; i < count; i++) alias_pages[first + i] = 1;
         alias_bytes += fresh;
     }
+    static unsigned said;
+    if (said++ < 60 || !(said & 255))
+        fprintf(stderr, "[totk] alias %s %#llx+%#llx (fresh %#llx) -> mapped %#llx in all, call %u\n", unmap ? "unmap" : "map",
+                (unsigned long long)addr, (unsigned long long)size, (unsigned long long)fresh, (unsigned long long)alias_bytes, said);
     pthread_mutex_unlock(&memory_lock);
     return 0;
 }
@@ -335,6 +378,16 @@ uint64_t runtime_svc(unsigned num, uint64_t *r, uint64_t pc) {
             return r[0];
         }
         if (size < heap_size) decommit(HEAP_START + size, heap_size - size);
+        fprintf(stderr, "[totk] SetHeapSize %#llx (was %#llx)\n", (unsigned long long)size, (unsigned long long)heap_size);
+#ifdef __linux__
+        if (size > heap_size && mtl_guest_back) {   /* the new slabs: nothing written there yet */
+            uint64_t from = (heap_size + HEAP_SLAB - 1) / HEAP_SLAB * HEAP_SLAB;   /* (a slab already in use stays as it is) */
+            if (from < size && !plat_protect(HEAP_START + from, size - from, PLAT_PROT_NONE)) {
+                for (uint64_t at = from; at < size; at += HEAP_SLAB) heap_slab_state[at / HEAP_SLAB] = 1;
+                plat_set_fault_hook(heap_fault);
+            }
+        }
+#endif
         heap_size = size;
         r[0] = 0;
         r[1] = HEAP_START;

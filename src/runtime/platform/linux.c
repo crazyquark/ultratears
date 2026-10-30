@@ -55,7 +55,28 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return true;
 }
 
-void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+// Everything is committed already, but parts of the window are backed only when first touched (svc.c: the heap, in
+// slabs backed by device memory from the fault handler): touched here, one byte a megabyte and the last, so that the
+// kernel's own accesses (file reads into game memory, which take no fault but fail with EFAULT) find them backed.
+void plat_commit(uint64_t addr, uint64_t size) {
+    if (!size) return;
+    for (uint64_t a = addr; a < addr + size; a += 1u << 20) (void)*(volatile const uint8_t *)(uintptr_t)a;
+    (void)*(volatile const uint8_t *)(uintptr_t)(addr + size - 1);
+}
+
+// A fault in guest memory that is backed on first touch: the hook backs it and returns 1 (the access is retried).
+static int (*g_fault_hook)(uint64_t addr);
+void plat_set_fault_hook(int (*fn)(uint64_t addr)) { g_fault_hook = fn; }
+
+// Maps a file (a dma-buf: guest memory backed by device memory, gfx/backend_vk.c) over guest [lo, lo+size). On failure
+// the range is anonymous memory again (a failed MAP_FIXED may already have unmapped it). Closes fd. 1: mapped.
+int plat_map_fd(uint64_t lo, uint64_t size, int fd) {
+    void *p = mmap((void *)(uintptr_t)lo, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    close(fd);
+    if (p == (void *)(uintptr_t)lo) return 1;
+    mmap((void *)(uintptr_t)lo, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+    return 0;
+}
 
 // Write watch: what MEM_WRITE_WATCH / GetWriteWatch are on Windows, done as Wine does it. The window is registered with
 // userfaultfd for asynchronous write protection (the kernel lifts a page's protection on its first write, without
@@ -271,6 +292,7 @@ void plat_print_backtrace(void) {
 }
 
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
+    if ((sig == SIGSEGV || sig == SIGBUS) && g_fault_hook && g_fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     ucontext_t *uc = ctx;
     static volatile int depth;
     if (sig == SIGABRT && depth++ > 0) { signal(SIGABRT, SIG_DFL); abort(); }  // (nested: just die)
