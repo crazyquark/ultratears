@@ -13,6 +13,9 @@
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#define CreateDirectoryA(path, sec) mkdir(path, 0777)
 #endif
 
 #include "compat/gfx_compat.h"
