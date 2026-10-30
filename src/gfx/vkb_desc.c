@@ -97,7 +97,7 @@ uint64_t vkb_db_gen(void) { return g_gen; }
 
 // ---- the bytes of one descriptor, per submission (tables per recording thread)
 enum { CACHE = 1 << 15 };
-typedef struct { uint64_t rec, k0, k1, k2, k3; uint8_t len, bytes[63]; } dcache_t;
+typedef struct { uint64_t rec, k0, k1, k2, k3; uint8_t len, bytes[127]; } dcache_t;   // RADV: 96-byte combined image samplers
 static __thread dcache_t *g_cache;
 static vkb_cnt g_get_calls, g_cache_hits;
 typedef struct { uint64_t rec; VkBuffer buf; VkDeviceAddress addr; } addr_t;
@@ -137,10 +137,10 @@ static const uint8_t *descriptor(const VkWriteDescriptorSet *w, uint64_t rec, si
         if (c->rec == rec && c->k0 == k0 && c->k1 == k1 && c->k2 == k2 && c->k3 == k3) { vkb_cnt_add(g_cache_hits, 1); *len = c->len; return c->bytes; }
         if (c->rec != rec) { e = c; break; }
     }
-    static __thread uint8_t spill[64];   // the table region is full: no caching for this one
+    static __thread uint8_t spill[128];   // the table region is full: no caching for this one
     uint8_t *out = e ? e->bytes : spill;
     size_t n = type_size(w->descriptorType);
-    if (n > 63) die("descriptor of %zu bytes", n);
+    if (n > sizeof spill - 1) die("descriptor of %zu bytes", n);
     VkDescriptorGetInfoEXT gi = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, .type = w->descriptorType};
     VkDescriptorAddressInfoEXT ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
     if (w->pBufferInfo) {
