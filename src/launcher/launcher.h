@@ -89,7 +89,7 @@ std::string python_path(const std::string &root);         // deps/python/python.
 struct Icon { SDL_Texture *tex = nullptr; float w = 0, h = 0; };   // w, h: logical size (design pixels)
 struct Media {
     ImFont *regular = nullptr, *medium = nullptr, *small = nullptr, *title = nullptr, *brand = nullptr;
-    Icon emblem, pattern, check, error, folder, warn;
+    Icon emblem, pattern, check, error, folder, warn, chevron;
 };
 extern Media g_media;
 void media_load(SDL_Renderer *r, float scale);   // fonts and icons at this scale (again when it changes)

@@ -531,7 +531,7 @@ static void header(bool lang) {
     if (!lang)
         return;
     const char *name = lang_name(g_lang);
-    float w = 26 + 14 + 6 + text_w(g_media.medium, name);
+    float w = 26 + 14 + 6 + text_w(g_media.medium, name) + 4 + 14;
     float x = 764 - w;
     update_banner(x);
     bool hov, down;
@@ -541,6 +541,7 @@ static void header(bool lang) {
     DL->AddRectFilled(P(x, 24), P(764, 56), down ? C_DARK_DOWN : hov || open ? C_DARK_HOVER : C_DARK, 6 * S);
     globe(x + 13, 33, C_TEXT);
     text(g_media.medium, x + 13 + 14 + 6, 40 - g_media.medium->FontSize / S / 2, C_TEXT, name);
+    icon(g_media.chevron, 764 - 13 - 14, 33, 14);
     ImGui::SetNextWindowPos(P(x, 60));
     ImGui::SetNextWindowSize(ImVec2((764 - x) * S, (8 + 30 * LANG_COUNT) * S));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));

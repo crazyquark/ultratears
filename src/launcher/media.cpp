@@ -107,12 +107,13 @@ void media_load(SDL_Renderer *r, float scale) {
     g_media.title = font("MontserratAlternates-Bold.ttf", 25 * scale, ranges);
     g_media.brand = font("MontserratAlternates-SemiBold.ttf", 17 * scale, ranges);
     io.FontDefault = g_media.regular;
-    for (Icon *i : {&g_media.emblem, &g_media.pattern, &g_media.check, &g_media.error, &g_media.folder, &g_media.warn})
+    for (Icon *i : {&g_media.emblem, &g_media.pattern, &g_media.check, &g_media.error, &g_media.folder, &g_media.warn, &g_media.chevron})
         drop(*i);
     g_media.emblem = png(r, "l_emblem.png", 40, 40);
     g_media.pattern = png(r, "l_pattern.png", 256, 256);
     g_media.check = svg(r, "l_ic_check.svg", 16, scale);
     g_media.error = svg(r, "l_ic_error.svg", 16, scale);
     g_media.warn = svg(r, "l_ic_warn.svg", 16, scale);
+    g_media.chevron = svg(r, "l_ic_chevron.svg", 16, scale);
     g_media.folder = svg(r, "l_ic_folder.svg", 24, scale);
 }

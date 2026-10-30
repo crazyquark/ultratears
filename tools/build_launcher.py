@@ -23,7 +23,7 @@ SOURCES = ['src/launcher/main.cpp', 'src/launcher/ui.cpp', 'src/launcher/setup_p
            'third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp']
 ASSETS = ['fonts/Inter_18pt-Regular.ttf', 'fonts/Inter_18pt-Medium.ttf', 'fonts/MontserratAlternates-Bold.ttf',
           'fonts/MontserratAlternates-SemiBold.ttf', 'l_emblem.png', 'l_pattern.png', 'l_ic_check.svg', 'l_ic_error.svg',
-          'l_ic_folder.svg', 'l_ic_warn.svg']
+          'l_ic_folder.svg', 'l_ic_warn.svg', 'l_ic_chevron.svg']
 LIBS = ('-static -mwindows -lSDL3 -luser32 -lgdi32 -limm32 -lole32 -loleaut32 -lversion -luuid -ladvapi32 -lsetupapi '
         '-lshell32 -lwinmm -ldwmapi -lwinhttp -lbcrypt -liconv -lc++')
 
