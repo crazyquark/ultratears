@@ -484,6 +484,10 @@ def step_finish(dump, state, cpus):
                 for sub in ('exefs', 'romfs'):
                     shutil.rmtree(dump / sub, ignore_errors=True)
                 say('  deleted')
+    # the package this game was built by (its VERSION.txt line): the launcher offers Play while they match, "Update the
+    # game" once an update brought another one; kept here, with the build, whichever launcher looks at the folder
+    stamp = ROOT / 'VERSION.txt'
+    state['package'] = stamp.read_text(encoding='utf-8').strip() if stamp.is_file() else ''
     return 'ultratears.cfg ready'
 
 

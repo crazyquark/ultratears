@@ -52,8 +52,9 @@ bool single_instance(const char *title);                   // false: another lau
 void window_dark_title(SDL_Window *w);
 Lang system_lang();
 int logical_cpus();
-// ultratears-launcher.ini: lang ("" = the system's), dump (the folder with exefs and romfs), built (the package version
-// last built), updates ("off": no questions to GitHub), update_checked (unix time), update_* (a release found)
+// ultratears-launcher.ini: lang ("" = the system's), dump (the folder with exefs and romfs), install (another folder
+// than the launcher's), updates ("off": no questions to GitHub), update_checked (unix time), update_* (a release
+// found). Which package the game was built by is not here but with the build (data/setup.json "package").
 struct Settings {
     std::vector<std::pair<std::string, std::string>> kv;
     std::string get(const char *key) const;

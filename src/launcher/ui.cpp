@@ -232,19 +232,29 @@ static struct {
 static std::string log_path() { return path_join(U.install, "ultratears-setup.log"); }
 static bool installed() { return path_is_file(path_join(U.install, "UltraTears.exe")) && path_is_file(path_join(U.install, "ultratears.cfg")); }
 static bool started_before() { return path_is_file(path_join(U.install, "data/setup.json")) && !installed(); }
-// built by an older package (an update came since): the next build redoes only what changed
-static bool stale() { return installed() && !U.version.empty() && U.set.get("built") != U.version; }
+static Json setup_state() {   // data/setup.json of the install folder: setup.py's record of the build
+    Json st;
+    size_t n = 0;
+    char *s = (char *)SDL_LoadFile(path_join(U.install, "data/setup.json").c_str(), &n);
+    if (s) {
+        json_parse(std::string(s, n), st);
+        SDL_free(s);
+    }
+    return st;
+}
+
+// built by another package than the one in the install folder (an update came since): the next build redoes only what
+// changed. setup.py records the package with the build (data/setup.json "package"), so any launcher, the one the
+// player extracted or the copy in the install folder, sees the same.
+static bool stale() {
+    std::string line = package_version_line(U.install);
+    return installed() && !line.empty() && setup_state()["package"].str() != "UltraTears " + line;
+}
 
 // The game's files are already in data\ of the install folder (setup.py packed the RomFS and took the ExeFS): the
 // dump is no longer needed, and setup.py checks that data itself (step check) before it builds on it.
 static bool data_ready() {
-    size_t n = 0;
-    char *s = (char *)SDL_LoadFile(path_join(U.install, "data/setup.json").c_str(), &n);
-    if (!s)
-        return false;
-    Json st;
-    bool ok = json_parse(std::string(s, n), st) && !st["romfs"].str().empty();
-    SDL_free(s);
+    bool ok = !setup_state()["romfs"].str().empty();
     for (const char *f : {"data/romfs/romfs.bin", "data/romfs/runtime-index.bin", "data/exefs/main"})
         ok = ok && path_is_file(path_join(U.install, f));
     return ok;
@@ -460,9 +470,7 @@ static void on_event(const Json &e) {
             U.screen = SCR_DUMP;
         }
     } else if (ev == "done") {
-        U.done = true;
-        U.set.set("built", U.version);   // the game matches this package: Play, until the next update
-        save();
+        U.done = true;   // setup.py recorded the package with the build (data/setup.json): Play from now on
         for (Row &r : U.rows)
             if (r.st == R_PENDING || r.st == R_RUN)
                 r.st = R_DONE;
