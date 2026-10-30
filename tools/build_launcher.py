@@ -1,8 +1,9 @@
 """Build the launcher, UltraTears Launcher.exe: the window that checks the dump and the PC, runs tools/setup.py --json
 and starts the game (src/launcher/). It holds no code of the game, so a release ships it built; in Git only its source.
 
-SDL3 (static, the one the game links) + Dear ImGui (third_party/imgui) + nanosvg and stb_image; the fonts, icons and
-images of assets/launcher/ are compiled in, so the exe is one file. MSYS2 CLANG64 clang/ninja, as tools/build_game.py.
+SDL3 (static, the one the game links) + Dear ImGui, nanosvg and stb_image (downloaded into deps/launcher, pinned in
+tools/deps.json); the fonts, icons and images of assets/launcher/ are compiled in, so the exe is one file. MSYS2 CLANG64
+clang/ninja, as tools/build_game.py.
 usage: python tools/build_launcher.py [--out <folder>] [--debug]   (default: dev-local/build/launcher)
 """
 import argparse
@@ -12,15 +13,16 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+import deps_install  # noqa: E402
 from toolchain import CLANG64, env as tool_env  # noqa: E402
 import version  # noqa: E402
 
 EXE = 'UltraTears Launcher.exe'
 SOURCES = ['src/launcher/main.cpp', 'src/launcher/ui.cpp', 'src/launcher/setup_proc.cpp', 'src/launcher/platform.cpp',
            'src/launcher/text.cpp', 'src/launcher/json.cpp', 'src/launcher/media.cpp', 'src/launcher/update.cpp',
-           'third_party/imgui/imgui.cpp', 'third_party/imgui/imgui_draw.cpp', 'third_party/imgui/imgui_tables.cpp',
-           'third_party/imgui/imgui_widgets.cpp', 'third_party/imgui/backends/imgui_impl_sdl3.cpp',
-           'third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp']
+           'deps/launcher/imgui/imgui.cpp', 'deps/launcher/imgui/imgui_draw.cpp', 'deps/launcher/imgui/imgui_tables.cpp',
+           'deps/launcher/imgui/imgui_widgets.cpp', 'deps/launcher/imgui/backends/imgui_impl_sdl3.cpp',
+           'deps/launcher/imgui/backends/imgui_impl_sdlrenderer3.cpp']
 ASSETS = ['fonts/Inter_18pt-Regular.ttf', 'fonts/Inter_18pt-Medium.ttf', 'fonts/MontserratAlternates-Bold.ttf',
           'fonts/MontserratAlternates-SemiBold.ttf', 'l_emblem.png', 'l_pattern.png', 'l_ic_check.svg', 'l_ic_error.svg',
           'l_ic_folder.svg', 'l_ic_warn.svg', 'l_ic_chevron.svg']
@@ -89,6 +91,7 @@ def main():
     a = ap.parse_args()
     build = a.out.resolve()
     (build / 'obj').mkdir(parents=True, exist_ok=True)
+    deps_install.launcher_libs(ROOT)   # Dear ImGui, nanosvg, stb_image: deps/launcher, pinned in tools/deps.json
     assets_c(build)
     print(f'UltraTears Launcher {resources(build)}', flush=True)
     opt = '-O0' if a.debug else '-O2'
@@ -96,8 +99,8 @@ def main():
     libs = LIBS.replace('-mwindows', '-mconsole') if a.debug else LIBS
     lines = [
         f'builddir = {b}',
-        f'flags = {opt} -g -gcodeview -march=x86-64-v2 -Ithird_party/imgui -Ithird_party/imgui/backends -Ithird_party/nanosvg '
-        f'-Ithird_party/stb -I{b} -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DUNICODE -D_UNICODE',
+        f'flags = {opt} -g -gcodeview -march=x86-64-v2 -Ideps/launcher/imgui -Ideps/launcher/imgui/backends -Ideps/launcher/nanosvg '
+        f'-Ideps/launcher/stb -I{b} -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DUNICODE -D_UNICODE',
         'rule cxx',
         '  command = clang++ -MD -MF $out.d $flags -std=c++17 -fno-exceptions -fno-rtti -Wall -Wno-unused-function -c $in -o $out',
         '  depfile = $out.d',

@@ -217,5 +217,142 @@
   "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.402/dotnet-sdk-10.0.402-win-x64.zip",
   "sha512": "ae4fd528cb7e9f6af6aaf7de36715a69f761f183744f1bb3025d19f5a92447090ec561410e46266c1d10a63781ed6f3de771760bc76c876d87daabc367b898cd",
   "size": 300755826
+ },
+ "launcher": {
+  "imgui": {
+   "version": "1.91.9b",
+   "files": [
+    {
+     "path": "LICENSE.txt",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/LICENSE.txt",
+     "size": 1083,
+     "sha256": "c80c5789748d955c4a650562baa0d750494e2c7128c2ca66aaebe2e3c4e198bf"
+    },
+    {
+     "path": "imconfig.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imconfig.h",
+     "size": 11579,
+     "sha256": "0884061cc43e27e1d346fe18dcd1425792eb2532d3d16610a82eb5ac751f7594"
+    },
+    {
+     "path": "imgui.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui.cpp",
+     "size": 882057,
+     "sha256": "af1cc31255fbf58d57ecc9d727cbd39a84e44fa8f11be7fd419fa0100c5255d8"
+    },
+    {
+     "path": "imgui.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui.h",
+     "size": 378236,
+     "sha256": "2d0180859ff85e7fe66ed9999b0f05f2fc45176773046a8f86b3b6bd190b0765"
+    },
+    {
+     "path": "imgui_draw.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui_draw.cpp",
+     "size": 258761,
+     "sha256": "9d2d9ee6745d9b98d7f39a16da8ffcf783f90bb8c9e931038fc8e9a15cbe3d84"
+    },
+    {
+     "path": "imgui_internal.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui_internal.h",
+     "size": 272833,
+     "sha256": "1363c617a743957f367afe1c6c88345870b7aa25ee339809fb915466e4fb9575"
+    },
+    {
+     "path": "imgui_tables.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui_tables.cpp",
+     "size": 247597,
+     "sha256": "4ea380fa9d49cac6cbfbc8b969969f9b0705518ec9ca340681d8c70e3eefbc28"
+    },
+    {
+     "path": "imgui_widgets.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imgui_widgets.cpp",
+     "size": 517769,
+     "sha256": "54ac29dbcbe70091f5e5fc2cb4099e6d0b9d1c939e5158f2be983cb508714414"
+    },
+    {
+     "path": "imstb_rectpack.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imstb_rectpack.h",
+     "size": 20344,
+     "sha256": "2efa3d5f7d003c19743b15155dad9f46d9f9fc783a18893d703b431d3c990972"
+    },
+    {
+     "path": "imstb_textedit.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imstb_textedit.h",
+     "size": 57128,
+     "sha256": "77010e494caf72c178b573569612aec409d24380409676325a31d02de0ec64b7"
+    },
+    {
+     "path": "imstb_truetype.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/imstb_truetype.h",
+     "size": 199485,
+     "sha256": "87f08919ae8e7223451d0e9d06b62829075d3e920c9e6ad436db9d7e7427ffce"
+    },
+    {
+     "path": "backends/imgui_impl_sdl3.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/backends/imgui_impl_sdl3.cpp",
+     "size": 40277,
+     "sha256": "f6973eebab67a6e2c6cad4a495c20d453c714b43ff90d8e444dd88a98c73c7e5"
+    },
+    {
+     "path": "backends/imgui_impl_sdl3.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/backends/imgui_impl_sdl3.h",
+     "size": 3040,
+     "sha256": "a6866cb9f9d9eb69ad64d49075fbcc247cadb9c872fcdfb0569f4b93ccb802a6"
+    },
+    {
+     "path": "backends/imgui_impl_sdlrenderer3.cpp",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/backends/imgui_impl_sdlrenderer3.cpp",
+     "size": 13575,
+     "sha256": "410b191de535723a81dde83212b1be88adc2b6d3c61f9a02691c6f4d07a6ec20"
+    },
+    {
+     "path": "backends/imgui_impl_sdlrenderer3.h",
+     "url": "https://raw.githubusercontent.com/ocornut/imgui/f5befd2d29e66809cd1110a152e375a7f1981f06/backends/imgui_impl_sdlrenderer3.h",
+     "size": 2781,
+     "sha256": "3e356dd91a17f4210e2aab5d4e28aa55adb0c95c26dc87c5dd5a806d46bad52f"
+    }
+   ]
+  },
+  "nanosvg": {
+   "version": "239e102",
+   "files": [
+    {
+     "path": "LICENSE.txt",
+     "url": "https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/LICENSE.txt",
+     "size": 880,
+     "sha256": "e82bc3dd03400aecabe12201219ba14750dbc4b36faab58663a7a6068548d372"
+    },
+    {
+     "path": "nanosvg.h",
+     "url": "https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvg.h",
+     "size": 88980,
+     "sha256": "e34fd5d084be106cea972d19ce5d27fd96d17ba89f8d06bdceee058420c8b2b0"
+    },
+    {
+     "path": "nanosvgrast.h",
+     "url": "https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvgrast.h",
+     "size": 39398,
+     "sha256": "79a9c5f4db19debf9f3a648a1589e96d92854f245a5cb4f3d823f263785234d8"
+    }
+   ]
+  },
+  "stb": {
+   "version": "stb_image 2.30",
+   "files": [
+    {
+     "path": "LICENSE",
+     "url": "https://raw.githubusercontent.com/nothings/stb/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5/LICENSE",
+     "size": 2510,
+     "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
+    },
+    {
+     "path": "stb_image.h",
+     "url": "https://raw.githubusercontent.com/nothings/stb/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5/stb_image.h",
+     "size": 283010,
+     "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
+    }
+   ]
+  }
  }
 }

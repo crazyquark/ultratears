@@ -71,15 +71,15 @@ capstone https://github.com/capstone-engine/capstone, Ryujinx https://github.com
 
 # The source tree in the package is what the build on the player's PC uses: what only builds the parts that come built
 # (the launcher, the shader translator), the developers' tools and GitHub's files stay in the repository.
-NOT_IN_PACKAGE = ['src/launcher', 'third_party/imgui', 'third_party/nanosvg', 'third_party/stb', 'assets/launcher',
+NOT_IN_PACKAGE = ['src/launcher', 'assets/launcher',
                   'assets/cover.png', 'third_party/maxwell_shader', 'third_party/shader_translator', 'tools/build_xlate.py',
                   'tools/build_launcher.py', 'tools/make_package.py', 'tools/eden_xlate', 'tools/run_eden_xlate.py',
                   'tools/compare_spirv_opt.py', 'tools/validate_spirv.py', 'tools/gen_nvn_thunks.py', 'tools/recon_code.py',
                   'tools/recon_romfs.py', 'tools/dev_glsl_tree.py', 'tools/dev_lum.py', 'tools/dev_player_dump.py',
                   'tools/dev_timeline.py', '.github', '.gitignore', '.gitattributes', 'PR.md', 'BUILDING.md']
 # licenses of what is compiled into the launcher and the translator, kept when their sources are left out
-LICENSE_COPIES = {'third_party/imgui/LICENSE.txt': 'imgui.txt', 'third_party/nanosvg/LICENSE.txt': 'nanosvg.txt',
-                  'third_party/stb/LICENSE': 'stb.txt', 'assets/launcher/fonts/OFL-Inter.txt': 'OFL-Inter.txt',
+LICENSE_COPIES = {'deps/launcher/imgui/LICENSE.txt': 'imgui.txt', 'deps/launcher/nanosvg/LICENSE.txt': 'nanosvg.txt',
+                  'deps/launcher/stb/LICENSE': 'stb.txt', 'assets/launcher/fonts/OFL-Inter.txt': 'OFL-Inter.txt',
                   'assets/launcher/fonts/OFL-MontserratAlternates.txt': 'OFL-MontserratAlternates.txt',
                   'third_party/shader_translator/LICENSE': 'totk_xlate.txt'}
 
@@ -204,6 +204,7 @@ def main():
     commit = git('rev-parse', '--short', 'HEAD').strip()
     lic = out / 'licenses'
     lic.mkdir()
+    deps_install.launcher_libs(ROOT)   # their licenses come from deps/launcher
     for src, dst in LICENSE_COPIES.items():
         shutil.copy2(ROOT / src, lic / dst)
     for p in NOT_IN_PACKAGE:

@@ -372,6 +372,24 @@ def build_xlate(home):
         raise DepsError('building the shader translator failed; the lines above say why')
 
 
+# ---------------------------------------------------------------- the launcher's libraries
+def launcher_libs(home=ROOT):
+    """deps/launcher/<lib>/: Dear ImGui, nanosvg and stb_image, the files tools/build_launcher.py compiles in, each
+    downloaded from its pinned upstream commit (tools/deps.json "launcher": size and SHA-256 checked) unless a good
+    copy is there. Only the developer builds the launcher; a release carries it built."""
+    out = home / 'deps/launcher'
+    for lib, spec in manifest()['launcher'].items():
+        for item in spec['files']:
+            dst = out / lib / item['path']
+            if dst.is_file() and good(dst, item):
+                continue
+            got = fetch(item, out / 'downloads' / lib / pathlib.PurePosixPath(item['path']).parent, f'{lib} {spec["version"]}')
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(got, dst)
+    shutil.rmtree(out / 'downloads', ignore_errors=True)
+    return out
+
+
 # ---------------------------------------------------------------- entry points
 def ensure_tools(home):
     """Run on the build's Python (3.14+): CLANG64 and the translator, installed when missing."""
