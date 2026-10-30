@@ -257,6 +257,154 @@ static void backend_init(void) {
     pthread_mutex_unlock(&mu);
 }
 
+static void destroy_later(VkImageView view, VkImage img, VkDeviceMemory mem, VkBuffer buf);
+
+// ---- memory pools in device memory (Linux)
+// Imported game memory (VK_EXT_external_memory_host) is an amdgpu userptr BO, and the kernel walks every page of every
+// userptr BO on every submission (RADV puts every BO in every submission once buffer device addresses are in use): with
+// TOTK's ~1300 pools (1 GiB) an empty vkQueueSubmit took 12 ms, and there are two a frame (measured on the Steam Deck).
+// Instead a pool's memory is moved into exported device memory (host visible, coherent, cached: the CPU reads and
+// writes it at full speed) mapped at the same addresses (platform/linux.c plat_move_to_fd), and the pool is a buffer in
+// it. Only pools: backing all game memory the game touched grew past what the kernel lets the GPU hold (~9 GiB after a
+// while) and its memory manager swapped until the Deck froze. A backing stays when its pool goes (the game's memory
+// is in it) and serves a later pool inside it; one no pool uses goes back to ordinary memory when a new pool overlaps
+// it or the backings would pass TOTK_VK_GUEST_BACKING_MB (default 3072). Past that pools are imported, as before.
+// TOTK_VK_GUEST_BACKING=0: all imported.
+#ifdef __linux__
+int plat_move_to_fd(uint64_t lo, uint64_t size, int fd);   // platform/linux.c (closes fd)
+int plat_move_to_anon(uint64_t lo, uint64_t size);
+typedef struct { uint64_t lo, hi; VkDeviceMemory mem; int refs; } backing_t;   // disjoint
+static backing_t *g_back;
+static int g_nback, g_caback;
+static uint64_t g_back_bytes, g_back_made, g_back_freed;
+static pthread_mutex_t g_back_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static uint32_t backing_type(void) {
+    static uint32_t type = UINT32_MAX - 1;
+    if (type != UINT32_MAX - 1) return type;
+    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    type = UINT32_MAX;
+    for (uint32_t i = 0; i < vkc.memory.memoryTypeCount && type == UINT32_MAX; i++)   // system memory first
+        if ((vkc.memory.memoryTypes[i].propertyFlags & want) == want && !(vkc.memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) type = i;
+    for (uint32_t i = 0; i < vkc.memory.memoryTypeCount && type == UINT32_MAX; i++)
+        if ((vkc.memory.memoryTypes[i].propertyFlags & want) == want) type = i;
+    return type;
+}
+
+static uint64_t backing_cap(void) {   // bytes; 0: no backings
+    static int64_t cap = -1;
+    if (cap < 0) {
+        const char *off = getenv("TOTK_VK_GUEST_BACKING"), *mb = getenv("TOTK_VK_GUEST_BACKING_MB");
+        cap = off && !strcmp(off, "0") ? 0 : (int64_t)(mb && *mb ? strtoull(mb, NULL, 10) : 3072) << 20;
+    }
+    return (uint64_t)cap;
+}
+
+// g_back_mu held: backing i (no pool in it) back to ordinary memory; its device memory goes once the GPU is done.
+static int back_release(int i) {
+    backing_t b = g_back[i];
+    if (!plat_move_to_anon(b.lo, b.hi - b.lo)) return 0;
+    destroy_later(VK_NULL_HANDLE, VK_NULL_HANDLE, b.mem, VK_NULL_HANDLE);
+    g_back[i] = g_back[--g_nback];
+    g_back_bytes -= b.hi - b.lo;
+    g_back_freed++;
+    return 1;
+}
+
+// Pool memory [a, b) in device memory: the backing (a reference taken) and the offset in it; VK_NULL_HANDLE: imported.
+static VkDeviceMemory backing_get(uint64_t a, uint64_t b, uint64_t *off) {
+    uint64_t cap = backing_cap();
+    if (!cap || a < GUEST_LO || b > GUEST_HI || !vkc.has_dma_buf || !vk.vkGetMemoryFdKHR || backing_type() == UINT32_MAX) return VK_NULL_HANDLE;
+    pthread_mutex_lock(&g_back_mu);
+    for (int i = 0; i < g_nback; i++)
+        if (a >= g_back[i].lo && b <= g_back[i].hi) {
+            g_back[i].refs++;
+            *off = a - g_back[i].lo;
+            pthread_mutex_unlock(&g_back_mu);
+            return g_back[i].mem;
+        }
+    for (int i = g_nback - 1; i >= 0; i--)   // overlapped: an unused backing goes, one still in use leaves the pool imported
+        if (a < g_back[i].hi && g_back[i].lo < b && (g_back[i].refs || !back_release(i))) {
+            static int said;
+            if (said++ < 8) VLOG("memory pool %#llx..%#llx overlaps the device memory of a pool in use (%#llx..%#llx): imported",
+                                 (unsigned long long)a, (unsigned long long)b, (unsigned long long)g_back[i].lo, (unsigned long long)g_back[i].hi);
+            pthread_mutex_unlock(&g_back_mu);
+            return VK_NULL_HANDLE;
+        }
+    for (int i = g_nback - 1; i >= 0 && g_back_bytes + (b - a) > cap; i--)   // over the cap: unused backings go first
+        if (!g_back[i].refs) back_release(i);
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    int fd = -1;
+    if (g_back_bytes + (b - a) > cap) {
+        static int said;
+        if (!said++) VLOG("device memory for pools at its limit (%llu MiB, TOTK_VK_GUEST_BACKING_MB): further pools are imported",
+                          (unsigned long long)(cap >> 20));
+    } else if (g_nback == g_caback && !(g_back = realloc(g_back, (size_t)(g_caback = g_caback ? g_caback * 2 : 256) * sizeof *g_back))) {
+        die("backing table");
+    } else {
+        VkExportMemoryAllocateInfo ex = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkMemoryAllocateFlagsInfo fl = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, &ex, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &fl, .allocationSize = b - a, .memoryTypeIndex = backing_type()};
+        VkMemoryGetFdInfoKHR gi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        if (vk.vkAllocateMemory(vkc.device, &ai, NULL, &mem) == VK_SUCCESS) {
+            gi.memory = mem;
+            if (vk.vkGetMemoryFdKHR(vkc.device, &gi, &fd) != VK_SUCCESS || !plat_move_to_fd(a, b - a, fd)) {
+                vk.vkFreeMemory(vkc.device, mem, NULL);
+                mem = VK_NULL_HANDLE;
+            }
+        } else mem = VK_NULL_HANDLE;
+        if (mem) {
+            g_back[g_nback++] = (backing_t){a, b, mem, 1};
+            g_back_bytes += b - a;
+            if (g_back_made++ % 256 == 0)
+                VLOG("pool memory %#llx..%#llx moved into device memory (%d backings, %.0f MiB; %llu made, %llu given back)",
+                     (unsigned long long)a, (unsigned long long)b, g_nback, g_back_bytes / 1048576.0,
+                     (unsigned long long)g_back_made, (unsigned long long)g_back_freed);
+        } else {
+            static int said;
+            if (said++ < 8) VLOG("memory pool %#llx..%#llx: no device memory for it; imported", (unsigned long long)a, (unsigned long long)b);
+        }
+    }
+    pthread_mutex_unlock(&g_back_mu);
+    *off = 0;
+    return mem;
+}
+
+static void backing_put(uint64_t a, uint64_t b) {   // a pool in [a, b) went
+    pthread_mutex_lock(&g_back_mu);
+    for (int i = 0; i < g_nback; i++)
+        if (a >= g_back[i].lo && b <= g_back[i].hi && g_back[i].refs > 0) { g_back[i].refs--; break; }
+    pthread_mutex_unlock(&g_back_mu);
+}
+
+// Pool memory [a, b) as a buffer in device memory (above). 0: not there (imported instead).
+static int backed_host(uintptr_t a, uintptr_t b, VkBuffer *out_buf) {
+    uint64_t off;
+    VkDeviceMemory mem = backing_get(a, b, &off);
+    if (!mem) return 0;
+    VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, .size = b - a,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkBuffer buf;
+    if (vk_check(vk.vkCreateBuffer(vkc.device, &bi, NULL, &buf), "pool buffer in device memory")) {
+        VkMemoryRequirements req;
+        vk.vkGetBufferMemoryRequirements(vkc.device, buf, &req);
+        if ((!req.alignment || off % req.alignment == 0) && vk_check(vk.vkBindBufferMemory(vkc.device, buf, mem, off), "pool buffer bind")) {
+            *out_buf = buf;
+            return 1;
+        }
+        vk.vkDestroyBuffer(vkc.device, buf, NULL);
+    }
+    VLOG("memory pool %#llx..%#llx: cannot be placed in its device memory", (unsigned long long)a, (unsigned long long)b);
+    backing_put(a, b);
+    return 0;   // (imported: fails for memory a backing holds; the pool is then not usable by the GPU)
+}
+#endif
+
 // Host memory [a, b) (aligned) imported as a buffer the GPU reads and writes in place. 0: not importable.
 static int import_host(uintptr_t a, uintptr_t b, VkBuffer *out_buf, VkDeviceMemory *out_mem) {
     // The import needs committed memory: guest pages are committed on first touch, so the range is committed now.
@@ -304,7 +452,10 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     uintptr_t align = vkc.host_pointer_alignment ? vkc.host_pointer_alignment : 4096;
     uintptr_t lo = (uintptr_t)mem, hi = lo + size, a = lo & ~(align - 1), b = (hi + align - 1) & ~(align - 1);
     VkBuffer buf;
-    VkDeviceMemory dm;
+    VkDeviceMemory dm = VK_NULL_HANDLE;   // the pool's import (none for a pool in device memory)
+#ifdef __linux__
+    if (!backed_host(a, b, &buf))
+#endif
     if (!import_host(a, b, &buf, &dm)) return;
     vkb_rw_write(&g_pool_mu, LK_POOLS);
     if (g_npools == g_capools) {
@@ -326,7 +477,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         }
     g_pool_bytes += hi - lo;
     static unsigned said;
-    if (said++ < 4) VLOG("memory pool %p+%#llx imported (%d pools, %.1f MiB)", mem, (unsigned long long)size, g_npools, g_pool_bytes / 1048576.0);
+    if (said++ < 4) VLOG("memory pool %p+%#llx %s (%d pools, %.1f MiB)", mem, (unsigned long long)size, dm ? "imported" : "in device memory",
+                         g_npools, g_pool_bytes / 1048576.0);
     else if (vkc.has_checkpoints || vkc.has_buffer_marker)   // with the deletions: a lost device's copies against the pool table
         VLOG("memory pool %p %#llx..%#llx imported as %#llx..%#llx (present %llu)", mem, (unsigned long long)lo, (unsigned long long)hi,
              (unsigned long long)a, (unsigned long long)b, (unsigned long long)vkb_frame());
@@ -357,6 +509,9 @@ void mtl_pool_del(const void *mem) {
     // A submission of another game thread may be being recorded already and have copied from the pool (the copies of
     // recently used pools at its start, sync_gather): the import goes when that submission is done (destroy_later).
     destroy_later(VK_NULL_HANDLE, VK_NULL_HANDLE, e.mem, e.buf);
+#ifdef __linux__
+    if (!e.mem) backing_put(e.base, e.base + e.bytes);   // (its memory stays: the game's)
+#endif
 }
 
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) { (void)p; (void)off; (void)n; }   // zero-copy: nothing cached

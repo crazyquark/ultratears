@@ -58,6 +58,62 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 void plat_memory_map(void) {}
 
+// Guest memory given another backing in place (gfx/backend_vk.c: a memory pool into device memory, and back to ordinary
+// memory). The range is read-only while its contents are copied; a thread writing there meanwhile waits in the fault
+// handler and its write is retried on the new memory. (A write by the kernel itself, a file read into the range, would
+// fail meanwhile: the copy is short and made as the game creates or reuses the pool.) One move at a time (the caller's
+// lock); a fault in the range just moved is retried too, as it may have happened before the new mapping.
+static uint64_t g_move_lo, g_move_hi, g_moved_lo, g_moved_hi;
+static __thread unsigned g_move_retries;
+static int move_fault(uint64_t addr) {
+    for (;;) {
+        uint64_t lo = __atomic_load_n(&g_move_lo, __ATOMIC_ACQUIRE), hi = __atomic_load_n(&g_move_hi, __ATOMIC_ACQUIRE);
+        if (addr < lo || addr >= hi) break;
+        sched_yield();
+    }
+    if (addr >= __atomic_load_n(&g_moved_lo, __ATOMIC_ACQUIRE) && addr < __atomic_load_n(&g_moved_hi, __ATOMIC_ACQUIRE) &&
+        g_move_retries++ < 1000) return 1;
+    return 0;
+}
+static int move_begin(uint64_t lo, uint64_t size) {
+    __atomic_store_n(&g_moved_hi, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_moved_lo, lo, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_moved_hi, lo + size, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_move_lo, lo, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_move_hi, lo + size, __ATOMIC_RELEASE);
+    if (!mprotect((void *)(uintptr_t)lo, size, PROT_READ)) return 1;
+    __atomic_store_n(&g_move_hi, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+static void move_end(void) { __atomic_store_n(&g_move_hi, 0, __ATOMIC_RELEASE); }
+
+// Guest [lo, lo+size) -> the file fd (a dma-buf: device memory), its contents copied there. Closes fd. 1: moved.
+int plat_move_to_fd(uint64_t lo, uint64_t size, int fd) {
+    void *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int ok = 0;
+    if (tmp != MAP_FAILED && move_begin(lo, size)) {
+        memcpy(tmp, (const void *)(uintptr_t)lo, size);
+        ok = mmap((void *)(uintptr_t)lo, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == (void *)(uintptr_t)lo;
+        if (!ok) mprotect((void *)(uintptr_t)lo, size, PROT_READ | PROT_WRITE);   // (the old memory, as it was)
+        move_end();
+    }
+    if (tmp != MAP_FAILED) munmap(tmp, size);
+    close(fd);
+    return ok;
+}
+
+// Guest [lo, lo+size) -> ordinary memory again, its contents copied there. 1: moved.
+int plat_move_to_anon(uint64_t lo, uint64_t size) {
+    void *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (tmp == MAP_FAILED) return 0;
+    if (!move_begin(lo, size)) { munmap(tmp, size); return 0; }
+    memcpy(tmp, (const void *)(uintptr_t)lo, size);
+    int ok = mremap(tmp, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)(uintptr_t)lo) == (void *)(uintptr_t)lo;
+    if (!ok) { mprotect((void *)(uintptr_t)lo, size, PROT_READ | PROT_WRITE); munmap(tmp, size); }
+    move_end();
+    return ok;
+}
+
 // Write watch: what MEM_WRITE_WATCH / GetWriteWatch are on Windows, done as Wine does it. The window is registered with
 // userfaultfd for asynchronous write protection (the kernel lifts a page's protection on its first write, without
 // stopping anyone), and PAGEMAP_SCAN reports the pages written since their last scan and protects them again in the
@@ -272,6 +328,7 @@ void plat_print_backtrace(void) {
 }
 
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
+    if (sig == SIGSEGV && move_fault((uint64_t)(uintptr_t)si->si_addr)) return;
     ucontext_t *uc = ctx;
     static volatile int depth;
     if (sig == SIGABRT && depth++ > 0) { signal(SIGABRT, SIG_DFL); abort(); }  // (nested: just die)
