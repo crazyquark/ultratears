@@ -106,6 +106,21 @@ static bool newer(const std::string &a, const std::string &b) {   // a > b
 
 bool version_newer(const std::string &a, const std::string &b) { return newer(a, b); }
 
+std::string package_version_line(const std::string &root) {
+    size_t n = 0;
+    char *t = (char *)SDL_LoadFile(path_join(root, "VERSION.txt").c_str(), &n);
+    if (!t)
+        return "";
+    std::string s(t, n);
+    SDL_free(t);
+    if (s.rfind("UltraTears ", 0) != 0)
+        return "";
+    s = s.substr(11);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+        s.pop_back();
+    return s;
+}
+
 std::string package_version(const std::string &root) {
     size_t n = 0;
     char *t = (char *)SDL_LoadFile(path_join(root, "VERSION.txt").c_str(), &n);

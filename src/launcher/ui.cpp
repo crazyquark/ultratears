@@ -180,7 +180,7 @@ static void globe(float x, float y, ImU32 col) {   // 14x14: a circle, the equat
 
 // ---------------------------------------------------------------- state
 enum Screen { SCR_DUMP, SCR_BUILD, SCR_HW, SCR_PLAY, SCR_UPDATE, SCR_BROKEN };
-enum DumpState { D_NONE, D_CHECKING, D_BAD, D_OK };
+enum DumpState { D_NONE, D_CHECKING, D_BAD, D_OK, D_DATA };   // D_DATA: the game data already in data/
 enum RowState { R_PENDING, R_RUN, R_DONE, R_WARN, R_ERROR };
 
 struct Row { const char *id, *name; RowState st = R_PENDING; double secs = -1; bool skipped = false; std::string err; };
@@ -192,7 +192,8 @@ static struct {
     std::string install;       // where the game is built: home, or a folder the player chose (the package copied there)
     std::string root;          // the package that builds and updates: install once the copy is there, else home
     std::string dump;          // the folder with exefs and romfs (settings: dump)
-    std::string version;       // of the package (VERSION.txt)
+    std::string version;       // of the package (VERSION.txt): x.y.z, for updates
+    std::string version_line;  // as VERSION.txt and the game's log write it: "0.2.0 (commit abc1234)"
     // the dump folder screen
     DumpState dump_st = D_NONE;
     std::string dump_code;
@@ -232,6 +233,21 @@ static bool started_before() { return path_is_file(path_join(U.install, "data/se
 // built by an older package (an update came since): the next build redoes only what changed
 static bool stale() { return installed() && !U.version.empty() && U.set.get("built") != U.version; }
 
+// The game's files are already in data\ of the install folder (setup.py packed the RomFS and took the ExeFS): the
+// dump is no longer needed, and setup.py checks that data itself (step check) before it builds on it.
+static bool data_ready() {
+    size_t n = 0;
+    char *s = (char *)SDL_LoadFile(path_join(U.install, "data/setup.json").c_str(), &n);
+    if (!s)
+        return false;
+    Json st;
+    bool ok = json_parse(std::string(s, n), st) && !st["romfs"].str().empty();
+    SDL_free(s);
+    for (const char *f : {"data/romfs/romfs.bin", "data/romfs/runtime-index.bin", "data/exefs/main"})
+        ok = ok && path_is_file(path_join(U.install, f));
+    return ok;
+}
+
 static bool same_path(std::string a, std::string b) {
     for (std::string *s : {&a, &b}) {
         for (char &c : *s)
@@ -251,10 +267,22 @@ static bool needs_copy() {
     return !has_package(U.install) || version_newer(package_version(U.home), package_version(U.install));
 }
 
+static void check_dump(const std::string &path);
+
 static void use_install(const std::string &folder) {
     U.install = folder;
     U.root = has_package(folder) ? folder : U.home;
     U.version = package_version(U.root);
+    U.version_line = package_version_line(U.root);
+}
+
+static void dump_state() {   // what the dump screen shows for this install folder
+    if (data_ready())
+        U.dump_st = D_DATA;
+    else if (!U.dump.empty())
+        check_dump(U.dump);
+    else
+        U.dump_st = D_NONE;
 }
 
 static SDL_EnumerationResult SDLCALL count_entry(void *n, const char *, const char *) {
@@ -348,7 +376,9 @@ static void run_setup() {
     }
     const char *cpus = SDL_getenv("ULTRS_LAUNCHER_CPUS");   // development: test builds leave the PC half free
     std::vector<std::string> args = {py, path_join(U.root, "tools/setup.py"), "--json",
-                                     "--cpus", cpus && *cpus ? cpus : std::to_string(logical_cpus()), "--dump", U.dump};
+                                     "--cpus", cpus && *cpus ? cpus : std::to_string(logical_cpus())};
+    if (U.dump_st != D_DATA)   // with the data already in place setup.py needs no dump (a deleted one is fine)
+        args.insert(args.end(), {"--dump", U.dump});
     U.build = setup_start(args, U.root, log_path());
     U.screen = SCR_BUILD;
 }
@@ -516,6 +546,8 @@ static void poll() {
         use_install(same_path(f, U.home) ? U.home : f);
         U.set.set("install", same_path(f, U.home) ? "" : f);
         save();
+        if (U.dump_st == D_DATA || data_ready())
+            dump_state();
     }
 
     if (U.copy) {
@@ -662,7 +694,8 @@ static float title(float y, const char *t, const char *sub) {
 static std::string gb(double v) { return std::to_string((long)(v + 0.5)); }
 
 static void screen_dump() {
-    float y = title(88, T("dump_title"), T("dump_sub")) + 24;
+    bool data = U.dump_st == D_DATA;
+    float y = title(88, T(data ? "prep_title" : "dump_title"), T(data ? "data_sub" : "dump_sub")) + 24;
     bool hov, down;
     if (U.dump_st == D_NONE || U.dump_st == D_CHECKING) {
         bool busy = U.dump_st == D_CHECKING;
@@ -699,20 +732,32 @@ static void screen_dump() {
         DL->ChannelsSetCurrent(1);
         return;
     }
-    // D_OK: the dump and the install folder
+    // D_OK: the dump and the install folder; D_DATA: the game data already prepared instead of the dump
     float top = y;
-    text(g_media.small, 52, y + 14, C_SUB, T("dump_label"));
     float cw = text_w(g_media.medium, T("change")) + 32, pw = 0;
-    path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 40, U.dump, &pw);
-    icon(g_media.check, 52 + pw + 8, y + 39);
-    if (button("dump_change", T("change"), 748 - cw, y + 14, cw, 40, DARK))
-        pick_folder(1, U.dump);
-    DL->ChannelsSetCurrent(0);
-    DL->AddRectFilled(P(36, top), P(764, top + 68), C_CARD, 10 * S);
-    DL->ChannelsSetCurrent(1);
+    if (U.dump_st == D_DATA) {
+        text(g_media.small, 52, y + 14, C_SUB, T("data_label"));
+        path_text(g_media.regular, 52, y + 38, 640, path_join(U.install, "data"), &pw);
+        icon(g_media.check, 52 + pw + 8, y + 39);
+        y += 62;
+        y += rich(g_media.small, 52, y, 700, {{T("data_note"), C_SUB}});
+        DL->ChannelsSetCurrent(0);
+        DL->AddRectFilled(P(36, top), P(764, y + 12), C_CARD, 10 * S);
+        DL->ChannelsSetCurrent(1);
+        top = y + 20;
+    } else {
+        text(g_media.small, 52, y + 14, C_SUB, T("dump_label"));
+        path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 40, U.dump, &pw);
+        icon(g_media.check, 52 + pw + 8, y + 39);
+        if (button("dump_change", T("change"), 748 - cw, y + 14, cw, 40, DARK))
+            pick_folder(1, U.dump);
+        DL->ChannelsSetCurrent(0);
+        DL->AddRectFilled(P(36, top), P(764, top + 68), C_CARD, 10 * S);
+        DL->ChannelsSetCurrent(1);
+        top += 76;
+    }
 
-    y = top + 76;
-    top = y;
+    y = top;
     text(g_media.small, 52, y + 14, C_TEXT, T("install_label"));
     path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 16, U.install);
     if (button("inst_change", T("change"), 748 - cw, y + 12, cw, 40, DARK))
@@ -724,14 +769,19 @@ static void screen_dump() {
     std::string wait_s = Tf("wait_time", {{"lo", std::to_string(SDL_max(lo, 5L))}, {"hi", std::to_string(SDL_max(hi, 10L))}});
     bool space = free < 0 || free >= need || installed() || started_before();
     y += 64;
-    if (space)
+    if (data) {   // built here before: only what changed is built again
+        std::string fs = Tf("free_only", {{"free", free < 0 ? "?" : gb(free)}});
+        y += rich(g_media.small, 52, y, 700, {{fs.c_str(), C_SUB}});
+    } else if (space)
         y += rich(g_media.small, 52, y, 700, {{need_s.c_str(), C_SUB}, {(" " + wait_s).c_str(), C_TEXT}});
     else {
         std::string ns = Tf("no_space", {{"drive", drive_of(U.install)}});
         y += rich(g_media.small, 52, y, 700, {{need_s.c_str(), C_ERR}, {(" " + ns).c_str(), C_ERR}});
     }
-    std::string del = Tf("can_delete", {{"dump", U.dump}});
-    y += rich(g_media.small, 52, y, 700, {{del.c_str(), C_SUB}});
+    if (U.dump_st != D_DATA) {
+        std::string del = Tf("can_delete", {{"dump", U.dump}});
+        y += rich(g_media.small, 52, y, 700, {{del.c_str(), C_SUB}});
+    }
     if (!same_path(U.install, U.home)) {
         std::string cp = Tf("copy_note", {{"home", U.home}});
         y += rich(g_media.small, 52, y, 700, {{cp.c_str(), C_SUB}});
@@ -741,9 +791,18 @@ static void screen_dump() {
     DL->ChannelsSetCurrent(1);
 }
 
-static void screen_dump_footer() {
-    if (U.dump_st != D_OK)
+static void version_label() {   // the port's version (the launcher's is the same), as the design shows it
+    if (U.version_line.empty())
         return;
+    std::string v = Tf("version", {{"v", U.version_line}});
+    text(g_media.small, 400 - text_w(g_media.small, v.c_str()) / 2, 440, C_DIM, v.c_str());
+}
+
+static void screen_dump_footer() {
+    if (U.dump_st != D_OK && U.dump_st != D_DATA) {
+        version_label();
+        return;
+    }
     bool resume = started_before(), rebuild = stale();
     const char *label = rebuild ? T("rebuild") : resume ? T("resume") : T("prepare");
     float w = SDL_max(196.0f, text_w(g_media.medium, label) + 48);
@@ -1060,10 +1119,10 @@ void ui_init(SDL_Window *w) {
     st.WindowRounding = 6;
     if (python_path(U.root).empty())
         U.screen = SCR_BROKEN;
-    else if (installed() && !U.dump.empty() && !stale())
+    else if (installed() && (!U.dump.empty() || data_ready()) && !stale())
         U.screen = SCR_PLAY;
-    else if (!U.dump.empty())
-        check_dump(U.dump);
+    else
+        dump_state();
 }
 
 void ui_frame(float scale) {
@@ -1103,6 +1162,7 @@ void ui_frame(float scale) {
     case SCR_DUMP: screen_dump_footer(); break;
     case SCR_BUILD: screen_build_footer(); break;
     case SCR_PLAY: screen_play_footer(); break;
+    case SCR_BROKEN: version_label(); break;
     case SCR_UPDATE: screen_update_footer(); break;
     default: break;
     }

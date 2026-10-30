@@ -355,7 +355,7 @@ def step_lift(dump, state, cpus):
 # had changed (2026-10-29). The sources' content and date are recorded after each compile; before the steps, a file
 # whose content is unchanged gets its recorded date back, so only what changed is compiled (as after a git pull).
 SOURCE_DATES = DATA / 'source-dates.json'
-SOURCE_DIRS = ('src', 'tools/bc7build')
+SOURCE_DIRS = ('src', 'tools/bc7build', 'assets')   # assets: the icon compiled into the exe
 
 
 def compiled_sources():
@@ -366,7 +366,9 @@ def compiled_sources():
 
 
 def keep_source_dates():
-    """Unchanged sources back to their recorded dates; how many."""
+    """Unchanged sources back to their recorded dates (how many); changed or new ones dated now. A package extracted
+    over an older one dates its files by the commit (the zip's times): a changed file older than the object of the last
+    build would not be compiled again by ninja, and the game would stay the old one."""
     try:
         old = json.loads(SOURCE_DATES.read_text())
     except (OSError, ValueError):
@@ -375,9 +377,13 @@ def keep_source_dates():
     for p in compiled_sources():
         rec = old.get(p.relative_to(ROOT).as_posix())
         st = p.stat()
-        if rec and rec[1] != st.st_mtime_ns and sha256(p) == rec[0]:
+        if rec and rec[1] == st.st_mtime_ns:
+            continue
+        if rec and sha256(p) == rec[0]:
             os.utime(p, ns=(st.st_atime_ns, rec[1]))
             n += 1
+        else:
+            os.utime(p)   # now: newer than any object built before
     return n
 
 
