@@ -2202,10 +2202,37 @@ void vkb_tex_dump(const char *dir) {
         uint8_t *px = dump_copy(cb, &e->im, 0, &bpp);
         if (px) jobs[n++] = (job){&e->im, px, bpp};
     }
+    // 3D volumes in R8 or BC4 (the noise TOTK makes at startup, L21): level 0 whole, as <dir>/vol_<serial>_<format>.bin
+    job vols[32];
+    int nvol = 0;
+    for (entry *e = g_all; e && nvol < 32; e = e->all_next) {
+        vkb_image *im = &e->im;
+        if (!e->refs || im->depth <= 1 || (im->format != VK_FORMAT_R8_UNORM && im->format != VK_FORMAT_BC4_UNORM_BLOCK)) continue;
+        uint32_t bytes = im->format == VK_FORMAT_R8_UNORM ? im->width * im->height * im->depth : (im->width / 4) * (im->height / 4) * 8 * im->depth;
+        VkBuffer b;
+        VkDeviceSize off;
+        uint8_t *px = vkb_ring_alloc(bytes, 16, &b, &off);
+        vkb_image_use(cb, im, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy r = {.bufferOffset = off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                               .imageExtent = {im->width, im->height, im->depth}};
+        vk.vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b, 1, &r);
+        vols[nvol++] = (job){im, px, bytes};
+    }
     pthread_mutex_unlock(&g_mu);
     mtl_wait(mtl_sub_commit(), UINT64_MAX);
     _mkdir(dir);   // one level: the parent must exist
     for (int k = 0; k < n; k++) dump_save(dir, "", jobs[k].im, jobs[k].px, jobs[k].bpp);
+    for (int k = 0; k < nvol; k++) {
+        const vkb_image *im = vols[k].im;
+        uint32_t zero = 0;
+        for (uint32_t i = 0; i < vols[k].bpp; i++) zero += !vols[k].px[i];
+        VLOG("[dump] volume texture %llu format %#x %ux%ux%u%s: %u bytes, %u zero", (unsigned long long)im->serial, im->d.format,
+             im->width, im->height, im->depth, im->gpu_written ? ", GPU-written" : "", vols[k].bpp, zero);
+        char path[1024];
+        snprintf(path, sizeof path, "%s/vol_%llu_%02x.bin", dir, (unsigned long long)im->serial, im->d.format);
+        FILE *f = fopen(path, "wb");
+        if (f) { fwrite(vols[k].px, 1, vols[k].bpp, f); fclose(f); }
+    }
     VLOG("dumped %d render targets to %s", n, dir);
     {   // GPU-written textures that share memory (aliasing): each is a separate image here
         int said = 0;
