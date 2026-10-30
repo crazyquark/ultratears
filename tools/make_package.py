@@ -158,10 +158,12 @@ def main():
     ap.add_argument('--python', type=pathlib.Path, default=pathlib.Path(sys.base_prefix))
     ap.add_argument('--no-zip', action='store_true')
     ap.add_argument('--home', type=pathlib.Path, default=ROOT / 'dist')   # tools/setup.py's default output
+    ap.add_argument('--test', action='store_true',
+                    help='a package of an untagged commit, named after git describe: for testing, never for Releases')
     a = ap.parse_args()
     if git('status', '--porcelain', '--untracked-files=no').strip():
         sys.exit('the working tree has uncommitted changes: commit first, the package must be the commit it names')
-    a.version = version.release()
+    a.version = version.current()[0] + '-test' if a.test else version.release()
     if not a.version:
         sys.exit('HEAD has no release tag: git tag v<x.y.z> (the package is named after it)')
     home, xlate = a.home.resolve(), ROOT / 'dev-local/build/shaders/ultrs-shaders.exe'

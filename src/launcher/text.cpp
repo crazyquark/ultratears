@@ -10,15 +10,24 @@ struct Text { const char *key, *s[LANG_COUNT]; };
 
 static const Text TEXTS[] = {
     {"dump_title", {"Path to the original game", "Путь к оригинальной игре"}},
-    {"dump_sub", {"UltraTears is built from your own copy of the game. Choose its folder: the launcher checks the version "
-                  "and compatibility itself.",
-                  "UltraTears собирается из вашей собственной копии игры. Выберите папку с ней — лаунчер сам проверит "
-                  "версию и совместимость."}},
+    {"dump_sub", {"UltraTears is built from your own extracted copy of the game, version 1.4.3. Choose the folder that "
+                  "holds its exefs and romfs folders: the launcher checks the version and compatibility itself.",
+                  "UltraTears собирается из вашей собственной распакованной копии игры версии 1.4.3. Выберите папку, в "
+                  "которой лежат папки exefs и romfs, — лаунчер сам проверит версию и совместимость."}},
     {"choose_folder", {"Choose folder", "Выбрать папку"}},
     {"drop_hint", {"You can also drop the folder onto this window", "Можно перетащить в это окно"}},
     {"checking", {"Checking the folder…", "Проверяю папку…"}},
     {"choose_other", {"Choose another folder", "Выбрать другую папку"}},
-    {"dump_label", {"Folder with the original game", "Папка с исходной игрой"}},
+    {"dump_label", {"Folder with the original game (exefs and romfs)", "Папка с исходной игрой (exefs и romfs)"}},
+    {"copy_note", {"The builder is copied there first; once the game is ready, {home} can be deleted.",
+                   "Сначала туда скопируется сборщик; после установки папку {home} можно удалить."}},
+    {"copying", {"Copying the builder", "Копирование сборщика"}},
+    {"install_copy", {"the builder could not be copied to {path}", "не удалось скопировать сборщик в {path}"}},
+    {"broken_title", {"The launcher's files are missing", "Не найдены файлы лаунчера"}},
+    {"broken_text", {"The launcher was started without the rest of the archive: from inside the ZIP, or copied on its "
+                     "own. Extract the whole archive into a folder of its own and start UltraTears Launcher.exe there.",
+                     "Лаунчер запущен без остальных файлов архива — прямо из ZIP или скопирован отдельно. Распакуйте "
+                     "архив целиком в отдельную папку и запустите UltraTears Launcher.exe оттуда."}},
     {"install_label", {"Where the game will be installed", "Финальное место распаковки игры"}},
     {"change", {"Change", "Изменить"}},
     {"need_free", {"Needs ≈ {need} GB. Free: {free} GB.", "Нужно ≈ {need} ГБ. Свободно {free} ГБ."}},
@@ -102,13 +111,14 @@ static const Text TEXTS[] = {
 
     // the dump (setup.py --check-dump)
     {"dump_missing", {"The folder does not exist", "Папка не найдена"}},
-    {"dump_missing.d", {"Choose the folder with your extracted game.", "Выберите папку с извлечённой игрой."}},
+    {"dump_missing.d", {"Choose the folder that holds exefs and romfs of the game, version 1.4.3.",
+                        "Выберите папку, в которой лежат exefs и romfs игры версии 1.4.3."}},
     {"dump_encrypted", {"This is an encrypted game package", "Это зашифрованный файл игры"}},
     {"dump_encrypted.d", {"{file}: the extracted exefs and romfs folders are needed. UltraTears decrypts nothing.",
                           "{file}: нужны уже извлечённые папки exefs и romfs. UltraTears ничего не расшифровывает."}},
-    {"dump_no_folders", {"There is no game in this folder", "В папке нет игры"}},
-    {"dump_no_folders.d", {"Choose the folder that holds exefs and romfs (extracted, as plain files).",
-                           "Нужна папка, в которой лежат exefs и romfs (извлечённые, обычными файлами)."}},
+    {"dump_no_folders", {"No game of version 1.4.3 was found in this folder", "В этой папке не найдена игра версии 1.4.3"}},
+    {"dump_no_folders.d", {"Choose another folder: the one that holds exefs and romfs (extracted, as plain files).",
+                           "Выберите другую папку — ту, в которой лежат exefs и romfs (распакованные, обычными файлами)."}},
     {"dump_incomplete", {"The game is not extracted completely", "Игра извлечена не полностью"}},
     {"dump_incomplete.d", {"{file} is missing. Extract the game again.", "Не хватает {file}. Извлеките игру заново."}},
     {"dump_version", {"This version of the game does not fit", "Эта версия игры не подходит"}},

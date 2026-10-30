@@ -104,6 +104,8 @@ static bool newer(const std::string &a, const std::string &b) {   // a > b
     return false;
 }
 
+bool version_newer(const std::string &a, const std::string &b) { return newer(a, b); }
+
 std::string package_version(const std::string &root) {
     size_t n = 0;
     char *t = (char *)SDL_LoadFile(path_join(root, "VERSION.txt").c_str(), &n);

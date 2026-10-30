@@ -179,7 +179,7 @@ static void globe(float x, float y, ImU32 col) {   // 14x14: a circle, the equat
 }
 
 // ---------------------------------------------------------------- state
-enum Screen { SCR_DUMP, SCR_BUILD, SCR_HW, SCR_PLAY, SCR_UPDATE };
+enum Screen { SCR_DUMP, SCR_BUILD, SCR_HW, SCR_PLAY, SCR_UPDATE, SCR_BROKEN };
 enum DumpState { D_NONE, D_CHECKING, D_BAD, D_OK };
 enum RowState { R_PENDING, R_RUN, R_DONE, R_WARN, R_ERROR };
 
@@ -188,8 +188,9 @@ struct Row { const char *id, *name; RowState st = R_PENDING; double secs = -1; b
 static struct {
     Screen screen = SCR_DUMP;
     Settings set;
-    std::string root;          // the builder package: tools/setup.py, deps/python, the launcher itself
-    std::string install;       // where the game is built: the package folder (setup.py builds in place)
+    std::string home;          // the package the launcher was started from (extracted from the zip)
+    std::string install;       // where the game is built: home, or a folder the player chose (the package copied there)
+    std::string root;          // the package that builds and updates: install once the copy is there, else home
     std::string dump;          // the folder with exefs and romfs (settings: dump)
     std::string version;       // of the package (VERSION.txt)
     // the dump folder screen
@@ -200,6 +201,7 @@ static struct {
     std::string checking;
     // the build
     SetupProc *build = nullptr;
+    SetupProc *copy = nullptr;   // tools/install_to.py: the package into the install folder, before the build
     Row rows[6] = {{"check", "step_check"}, {"romfs", "step_romfs"}, {"lift", "step_lift"},
                    {"compile", "step_compile"}, {"shaders", "step_shaders"}, {"textures", "step_textures"}};
     double weight[8] = {};
@@ -213,7 +215,7 @@ static struct {
     // folder dialogs answer on another thread
     SDL_Mutex *lock = nullptr;
     std::string picked;
-    int picked_for = 0;       // 1 the dump
+    int picked_for = 0;       // 1 the dump, 2 the install folder
     bool stopping = false;    // Stop pressed: the build is being killed
     // updates
     UpdateInfo upd;
@@ -229,6 +231,42 @@ static bool installed() { return path_is_file(path_join(U.install, "UltraTears.e
 static bool started_before() { return path_is_file(path_join(U.install, "data/setup.json")) && !installed(); }
 // built by an older package (an update came since): the next build redoes only what changed
 static bool stale() { return installed() && !U.version.empty() && U.set.get("built") != U.version; }
+
+static bool same_path(std::string a, std::string b) {
+    for (std::string *s : {&a, &b}) {
+        for (char &c : *s)
+            c = c == '/' ? '\\' : (char)SDL_tolower((unsigned char)c);
+        while (s->size() > 3 && s->back() == '\\')
+            s->pop_back();
+    }
+    return a == b;
+}
+
+static bool has_package(const std::string &folder) { return path_is_file(path_join(folder, "tools/setup.py")); }
+
+// the install folder has no package yet, or an older one than the launcher's own: tools/install_to.py first
+static bool needs_copy() {
+    if (same_path(U.install, U.home))
+        return false;
+    return !has_package(U.install) || version_newer(package_version(U.home), package_version(U.install));
+}
+
+static void use_install(const std::string &folder) {
+    U.install = folder;
+    U.root = has_package(folder) ? folder : U.home;
+    U.version = package_version(U.root);
+}
+
+static SDL_EnumerationResult SDLCALL count_entry(void *n, const char *, const char *) {
+    ++*(int *)n;
+    return SDL_ENUM_SUCCESS;   // one is enough
+}
+
+static bool folder_empty(const std::string &folder) {
+    int n = 0;
+    SDL_EnumerateDirectory(folder.c_str(), count_entry, &n);
+    return n == 0;
+}
 
 static void save() {
     U.set.set("lang", lang_code(g_lang));
@@ -300,9 +338,7 @@ static void start_build_state() {
     U.hw = Json();
 }
 
-static void start_build() {
-    start_build_state();
-    SDL_CreateDirectory(U.install.c_str());
+static void run_setup() {
     std::string py = python_path(U.root);
     if (py.empty()) {
         U.screen = SCR_BUILD;
@@ -315,6 +351,18 @@ static void start_build() {
                                      "--cpus", cpus && *cpus ? cpus : std::to_string(logical_cpus()), "--dump", U.dump};
     U.build = setup_start(args, U.root, log_path());
     U.screen = SCR_BUILD;
+}
+
+static void start_build() {
+    start_build_state();
+    SDL_CreateDirectory(U.install.c_str());
+    U.screen = SCR_BUILD;
+    if (!needs_copy()) {
+        run_setup();
+        return;
+    }
+    U.rows[0].st = R_RUN;   // the copy counts as the first step's "tools" part
+    U.copy = setup_start({python_path(U.home), path_join(U.home, "tools/install_to.py"), U.install}, U.home, log_path());
 }
 
 static void on_event(const Json &e) {
@@ -461,6 +509,41 @@ static void poll() {
     SDL_UnlockMutex(U.lock);
     if (which == 1)
         check_dump(picked);
+    if (which == 2) {   // a folder with other things in it: the game goes into UltraTears inside it
+        std::string f = picked;
+        if (!same_path(f, U.home) && !has_package(f) && !folder_empty(f))
+            f = path_join(f, "UltraTears");
+        use_install(same_path(f, U.home) ? U.home : f);
+        U.set.set("install", same_path(f, U.home) ? "" : f);
+        save();
+    }
+
+    if (U.copy) {
+        std::string line;
+        while (setup_line(U.copy, line)) {
+            Json e;
+            if (line.empty() || line[0] != '{' || !json_parse(line, e))
+                continue;
+            std::string ev = e["ev"].str();
+            if (ev == "progress" && e["total"].num() > 0)
+                U.frac[0] = SDL_min(0.999, e["done"].num() / e["total"].num());
+            else if (ev == "error")
+                on_event(e);
+        }
+        int code;
+        if (setup_finished(U.copy, &code)) {
+            setup_free(U.copy);
+            U.copy = nullptr;
+            if (code == 0 && !U.failed && has_package(U.install)) {
+                use_install(U.install);   // from now on the copy builds, updates and is played
+                run_setup();
+            } else if (!U.stopping) {
+                U.failed = true;
+                U.rows[0].st = R_ERROR;
+                U.rows[0].err = Tf("install_copy", {{"path", U.install}});
+            }
+        }
+    }
 
     if (U.check) {
         std::string line;
@@ -631,9 +714,10 @@ static void screen_dump() {
     y = top + 76;
     top = y;
     text(g_media.small, 52, y + 14, C_TEXT, T("install_label"));
-    // [temporary] the package folder itself: setup.py builds in place (another folder: waits for the user's choice)
-    path_text(g_media.regular, 52, y + 38, 700, U.install);
-    double need = 40, free = disk_free_gb(U.install);
+    path_text(g_media.regular, 52, y + 38, 748 - cw - 52 - 16, U.install);
+    if (button("inst_change", T("change"), 748 - cw, y + 12, cw, 40, DARK))
+        pick_folder(2, U.install);
+    double need = needs_copy() ? 41 : 40, free = disk_free_gb(U.install);
     double est = est_total_secs() / 60;
     long lo = (long)(est * 0.85 / 5) * 5, hi = ((long)(est * 1.15) + 4) / 5 * 5;
     std::string need_s = Tf("need_free", {{"need", gb(need)}, {"free", free < 0 ? "?" : gb(free)}});
@@ -648,6 +732,10 @@ static void screen_dump() {
     }
     std::string del = Tf("can_delete", {{"dump", U.dump}});
     y += rich(g_media.small, 52, y, 700, {{del.c_str(), C_SUB}});
+    if (!same_path(U.install, U.home)) {
+        std::string cp = Tf("copy_note", {{"home", U.home}});
+        y += rich(g_media.small, 52, y, 700, {{cp.c_str(), C_SUB}});
+    }
     DL->ChannelsSetCurrent(0);
     DL->AddRectFilled(P(36, top), P(764, y + 14), C_CARD, 10 * S);
     DL->ChannelsSetCurrent(1);
@@ -660,7 +748,7 @@ static void screen_dump_footer() {
     const char *label = rebuild ? T("rebuild") : resume ? T("resume") : T("prepare");
     float w = SDL_max(196.0f, text_w(g_media.medium, label) + 48);
     double free = disk_free_gb(U.install);
-    bool space = free < 0 || free >= 40 || installed() || resume;
+    bool space = free < 0 || free >= (needs_copy() ? 41 : 40) || installed() || resume;
     if (resume || rebuild)
         rich(g_media.small, 36, 418, 764 - w - 36 - 24, {{T(rebuild ? "rebuild_hint" : "resume_hint"), C_SUB}}, 17);
     if (button("prepare", label, 764 - w, 408, w, 48, PRIMARY, space))
@@ -728,7 +816,7 @@ static void screen_build() {
     char pct[16];
     SDL_snprintf(pct, sizeof pct, "%d%%", (int)(f * 100));
     if (!U.done) {
-        const char *label = U.failed ? T("failed_title") : T("processing");
+        const char *label = U.failed ? T("failed_title") : U.copy ? T("copying") : T("processing");
         text(g_media.regular, 36, y, C_TEXT, label);
     }
     text(g_media.regular, 764 - text_w(g_media.regular, pct), y, C_TEXT, pct);
@@ -762,6 +850,8 @@ static void screen_build_footer() {
         if (button("stop", T("stop"), 764 - w2 - 12 - w1, 408, w1, 48, DARK)) {
             if (U.build)
                 setup_kill(U.build);
+            if (U.copy)
+                setup_kill(U.copy);
             U.stopping = true;
             U.cancel_q = false;
             U.screen = SCR_DUMP;
@@ -814,6 +904,11 @@ static void screen_hw() {
     }
     ImGui::SetCursorScreenPos(P(0, y));
     ImGui::Dummy(ImVec2(1, 1));
+}
+
+static void screen_broken() {   // the exe without the rest of the zip: nothing to choose, only what to do
+    float y = title(88, T("broken_title"), nullptr) + 4;
+    rich(g_media.regular, 36, y, 700, {{T("broken_text"), C_SUB}});
 }
 
 static void screen_play() {
@@ -919,17 +1014,17 @@ void ui_init(SDL_Window *w) {
     U.dump = U.set.get("dump");
     // The builder package the launcher lies in: the game is built there (setup.py in place). ULTRS_ROOT: development,
     // a package or a folder made by setup.py --output elsewhere. A source checkout has no launcher: setup.py there.
-    U.root = exe_dir();
+    U.home = exe_dir();
     const char *root = SDL_getenv("ULTRS_ROOT");
     if (root && *root)
-        U.root = root;
+        U.home = root;
 #ifdef _WIN32
-    for (char &c : U.root)   // shown as Windows writes paths
+    for (char &c : U.home)   // shown as Windows writes paths
         if (c == '/')
             c = '\\';
 #endif
-    U.install = U.root;
-    U.version = package_version(U.root);
+    std::string inst = U.set.get("install");
+    use_install(inst.empty() ? U.home : inst);
     update_cleanup(U.root);
     // updates: one question to GitHub a day at most; a release found stays offered until it is installed
     U.upd.version = U.set.get("update_version");
@@ -963,7 +1058,9 @@ void ui_init(SDL_Window *w) {
     st.Colors[ImGuiCol_NavCursor] = ImVec4(0, 0, 0, 0);   // the focus frame is drawn by hit()
     st.PopupRounding = 6;
     st.WindowRounding = 6;
-    if (installed() && !U.dump.empty() && !stale())
+    if (python_path(U.root).empty())
+        U.screen = SCR_BROKEN;
+    else if (installed() && !U.dump.empty() && !stale())
         U.screen = SCR_PLAY;
     else if (!U.dump.empty())
         check_dump(U.dump);
@@ -980,7 +1077,7 @@ void ui_frame(float scale) {
                  ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     DL = ImGui::GetWindowDrawList();
     O = ImVec2(0, 0);
-    bool lang = U.screen == SCR_DUMP || U.screen == SCR_PLAY;
+    bool lang = U.screen == SCR_DUMP || U.screen == SCR_PLAY || U.screen == SCR_BROKEN;
 
     // the body scrolls when it does not fit (long texts, a small screen); the header and the buttons stay
     ImGui::SetCursorScreenPos(P(0, 72));
@@ -995,6 +1092,7 @@ void ui_frame(float scale) {
     case SCR_HW: screen_hw(); break;
     case SCR_PLAY: screen_play(); break;
     case SCR_UPDATE: screen_update(); break;
+    case SCR_BROKEN: screen_broken(); break;
     }
     DL->ChannelsMerge();
     ImGui::EndChild();
@@ -1076,6 +1174,11 @@ void ui_drop(const char *path) {
 }
 
 bool ui_close_request() {
+    if (U.copy && !U.stopping) {   // the copy resumes too: the same question as for the build
+        U.screen = SCR_BUILD;
+        U.cancel_q = U.close_after_cancel = true;
+        return false;
+    }
     if (U.apply)
         return false;   // files of the package are being replaced: a few seconds
     if (!U.build || U.done || U.failed || U.stopping)
@@ -1091,4 +1194,6 @@ void ui_quit() {
         setup_free(U.check);
     if (U.build)
         setup_free(U.build);   // a build stopped here resumes next time
+    if (U.copy)
+        setup_free(U.copy);
 }

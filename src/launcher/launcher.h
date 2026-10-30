@@ -68,6 +68,7 @@ bool restart_self();                                       // a new launcher sta
 // ---- update.cpp: new builder packages from GitHub Releases
 struct UpdateInfo { std::string version, name, url, sha256, page; uint64_t size = 0; };
 std::string package_version(const std::string &root);      // VERSION.txt of the package ("" in a source tree)
+bool version_newer(const std::string &a, const std::string &b);   // a > b, as x.y.z numbers
 void update_check_start(const std::string &current);       // the newest release, on a thread
 int update_check_poll(UpdateInfo *out);                    // 0 not yet, 1 a newer one, -1 none (or no answer)
 void update_download_start(const UpdateInfo &u, const std::string &dir);
