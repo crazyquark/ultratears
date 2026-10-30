@@ -41,7 +41,7 @@ def gpus(layer=None):
     """[(name, type, 'major.minor.patch', missing requirements)] of every graphics card the Vulkan loader reports, seen
     through layer when given; None when there is no Vulkan at all (or the layer is not installed)."""
     try:
-        vk = ctypes.WinDLL('vulkan-1.dll')
+        vk = ctypes.WinDLL('vulkan-1.dll') if sys.platform == 'win32' else ctypes.CDLL('libvulkan.so.1')
     except OSError:
         return None
     app = AppInfo(0, None, b'UltraTears setup', 0, None, 0, API_1_3)   # VK_STRUCTURE_TYPE_APPLICATION_INFO
