@@ -2801,14 +2801,21 @@ static void present_cfg(const win_t *o) {
     const char *e = getenv("DM_PRESENT_HZ"), *rt = getenv("TOTK_REALTIME");
     int realtime = !(rt && !strcmp(rt, "0"));
     g_hz = g_paced_hz = e ? atoi(e) : (realtime && scr > 0 ? scr : 60);
-    { const char *u = getenv("TOTK_UNCAPPED"), *f60 = getenv("TOTK_FPS60");   // the original 30-frame mode needs fixed pacing; MetalFX interpolation suspends it while on (uncapped_now)
-      // [port] Uncapped needs MacNativeGames' 60 FPS game patches and real-time frame step (game_patches_v143.c), not
-      // ported yet: without them the engine steps game time per frame as if at its chosen
-      // interval, and ~60 presents a second ran the game fast. Off unless TOTK_UNCAPPED=1.
-      g_uncapped = !e && realtime && u && !strcmp(u, "1") && !(f60 && !strcmp(f60, "0")) && g_hz < UNCAPPED_HZ; }
-    if (g_uncapped) { g_hz = uncapped_cap(scr); LOG("[nvn] uncapped (TOTK_UNCAPPED, on by default; =0 disables): independent clock capped at %d fps (TOTK_UNCAPPED_HZ); %d Hz display shows the latest frame each refresh%s", g_hz, scr,
-                                       mfx_enabled() ? " (paused while interpolation is on: one game frame per two refreshes)" : " (paused when interpolation is enabled with key 2)"); }
-    if (!g_hz) LOG("[nvn] [warning] DM_PRESENT_HZ=0: uncapped timing differs from real hardware and may affect UI logic (profiling only)");
+    /* UltraTears: the frame limit (host/frame_rate.c, TOTK_FPS_LIMIT). Above 30 the game code carries the 60 fps and
+       real-time step patches (tools/lifter/patches.py): our own clock paces at the limit (0: no pacing, unlimited),
+       one frame per period whatever interval the game chose (the step follows the frames as they take), and the
+       window shows the newest frame. 30 keeps the shipping pacing by the game's interval. */
+    { extern int totk_fr_limit(void); extern float window_refresh_hz(void);
+      int lim = totk_fr_limit();
+      g_uncapped = !e && realtime && lim != 30;
+      if (g_uncapped) {
+          float mon = window_refresh_hz();
+          g_hz = lim > 0 ? lim : lim < 0 ? (mon >= 30 ? (int)(mon + 0.5f) : 60) : 0;
+          atomic_store(&g_uncapped_interval, 1);
+          LOG("[nvn] frame limit: own clock at %d fps%s (monitor %.2f Hz)", g_hz, g_hz ? "" : " = unlimited", mon);
+      } }
+
+    if (!g_hz && e) LOG("[nvn] [warning] DM_PRESENT_HZ=0: uncapped timing differs from real hardware and may affect UI logic (profiling only)");
     // 剪口（有意偏离原版行为）：DM_PRESENT_INTERVAL=display 时不按游戏设的出图间隔，每个节拍出一帧，
     // 固定 60 帧硬底；逻辑 25 拍不变，且客户端按帧计数的界面逻辑不受影响——
     // 同存档同输入下两模式 UI 消息流逐条一致。证明（选角前）：r9 game / display 60 ×3 / display 120 ×2 共 6 组 uicmp 一致

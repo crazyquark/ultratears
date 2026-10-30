@@ -155,6 +155,13 @@ static void close_pad(SDL_JoystickID id) {
     pad_update();
 }
 
+// The refresh rate of the monitor the window is on (frame limit "display", frame_rate.c); 0 when not known.
+float window_refresh_hz(void) {
+    if (!window) return 0;
+    const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    return m ? m->refresh_rate : 0;
+}
+
 static void toggle_fullscreen(void) {
     bool on = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
     SDL_SetWindowFullscreen(window, !on);   // borderless desktop fullscreen (no display mode change)

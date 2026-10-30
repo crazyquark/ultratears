@@ -84,6 +84,15 @@ class Module:
         except Unsupported as e:
             return Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */'), True
 
+    def c_of(self, w, a):
+        """C for one non-branching instruction word as if at a (tools/lifter/patches.py: a replacement or the original)."""
+        ins = self.lifter.lift(w, a)
+        if ins.kind == 'asm':
+            return emit_asm_batch([ins.asm])
+        if ins.kind == 'op':
+            return ins.code
+        raise SystemExit(f'patch at {a:#x}: {w:#010x} is a {ins.kind}, not a plain instruction')
+
     def lift(self, a):
         ins = self.cache.get(a)
         if ins is not None:
@@ -564,6 +573,9 @@ class Module:
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
+            if a in PRE_PATCHES:  # code run before the instruction, which is lifted as usual (tools/patches.py)
+                flush()
+                out.append('    ' + PRE_PATCHES[a](self, a))
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
                 out.append('    ' + PATCHES[a](self, a))
@@ -628,7 +640,7 @@ class Module:
         return out
 
 
-from patches import PATCHES
+from patches import PATCHES, PRE_PATCHES
 
 
 def table_base(m, i, reg, window=40):
