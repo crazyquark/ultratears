@@ -782,10 +782,6 @@ static void screen_dump() {
         std::string del = Tf("can_delete", {{"dump", U.dump}});
         y += rich(g_media.small, 52, y, 700, {{del.c_str(), C_SUB}});
     }
-    if (!same_path(U.install, U.home)) {
-        std::string cp = Tf("copy_note", {{"home", U.home}});
-        y += rich(g_media.small, 52, y, 700, {{cp.c_str(), C_SUB}});
-    }
     DL->ChannelsSetCurrent(0);
     DL->AddRectFilled(P(36, top), P(764, y + 14), C_CARD, 10 * S);
     DL->ChannelsSetCurrent(1);

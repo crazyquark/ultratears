@@ -26,8 +26,6 @@ static const Text TEXTS[] = {
     {"data_sub", {"The game was prepared here before: the launcher builds again only what has changed since.",
                   "Игра здесь уже готовилась — лаунчер пересоберёт только то, что изменилось с тех пор."}},
     {"free_only", {"Free: {free} GB.", "Свободно {free} ГБ."}},
-    {"copy_note", {"The builder is copied there first; once the game is ready, {home} can be deleted.",
-                   "Сначала туда скопируется сборщик; после установки папку {home} можно удалить."}},
     {"copying", {"Copying the builder", "Копирование сборщика"}},
     {"install_copy", {"the builder could not be copied to {path}", "не удалось скопировать сборщик в {path}"}},
     {"broken_title", {"The launcher's files are missing", "Не найдены файлы лаунчера"}},
