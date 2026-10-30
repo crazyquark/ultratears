@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/cover.png" alt="UltraTears" width="100%"></p>
+
 # UltraTears
 
 **UltraTears** is an unofficial builder: on your PC it turns your own copy of a Nintendo Switch game into a native

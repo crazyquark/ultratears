@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/cover.png" alt="UltraTears" width="100%"></p>
+
 # UltraTears
 
 **UltraTears** — неофициальный сборщик: на вашем ПК он превращает вашу собственную копию игры для Nintendo Switch в
