@@ -326,7 +326,11 @@ def xlate_stamp(root=ROOT):
 
 
 def xlate_ok(home):
+    """A builder package carries the translator built from its commit, without the translator's sources (the link to
+    them is in THIRD-PARTY-NOTICES.md): taken as it is. A source tree: rebuilt whenever its sources changed."""
     exe, stamp = home / 'deps/shaders/ultrs-shaders.exe', home / 'deps/shaders/source.txt'
+    if installed(home).get('shaders') == 'package':
+        return exe.is_file()
     return exe.is_file() and stamp.is_file() and stamp.read_text().strip() == xlate_stamp(home)
 
 

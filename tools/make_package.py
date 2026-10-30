@@ -5,7 +5,9 @@ The version is the tag v<x.y.z> on HEAD (tools/version.py): tag the release comm
 Run on the developer's machine after a complete build in the game folder --home (tools/setup.py --output: its build/build.ninja
 and objects tell which parts of clang64 the build reads) and tools/build_xlate.py (dev-local/build/shaders):
   - the source: the public tree of HEAD (tools/public_tree.py: what git tracks, without the internal notes), so nothing
-    made from the game can slip in;
+    made from the game can slip in; without what the player's build does not use (NOT_IN_PACKAGE: the sources of the
+    launcher and the translator, which come built, with their licenses in licenses/ and a link to the source in
+    THIRD-PARTY-NOTICES.md; developer tools; GitHub's files);
   - deps/clang64: the part of MSYS2 CLANG64 the build uses, found by measuring, not guessing: the headers ninja
     recorded for every compiled file (and those of tools/bc7build), the libraries and objects lld reads when it links
     UltraTears.exe and bc7build.exe (its --verbose "Reading" lines), the programs (clang, clang++, lld, llvm-windres, ninja) and every DLL
@@ -56,12 +58,30 @@ This package also carries tools to build it; each keeps its license, copied into
 |---|---|---|---|
 | deps/clang64 | Parts of MSYS2 CLANG64: LLVM clang, lld, libc++, libunwind, compiler-rt (Apache-2.0 WITH LLVM-exception); mingw-w64 headers, CRT and winpthreads (ZPL / MIT / public domain); ninja (Apache-2.0); SDL3 (zlib); opus, libvpx, zstd (BSD); libiconv (LGPL-2.1+, linked statically: the objects to relink are made on your PC by the build itself); zlib, xz, libffi, libxml2 (their DLLs, loaded by clang); Vulkan headers (Apache-2.0 / MIT) | as listed | licenses/msys2/<package>/ |
 | deps/python | Python 3.14 (PSF License) with lz4 (BSD), capstone (BSD), unicorn (GPL-2.0) | as listed | licenses/Python.txt; each package's *.dist-info in deps/python/Lib/site-packages |
-| UltraTears Launcher.exe | The launcher: SDL3 (zlib), Dear ImGui (MIT), nanosvg (zlib), stb_image (MIT), the fonts Inter and Montserrat Alternates (SIL OFL 1.1), libc++ (Apache-2.0 WITH LLVM-exception) | as listed | licenses/msys2/SDL3, third_party/*/LICENSE*, assets/launcher/fonts/OFL-*.txt |
-| deps/shaders | ultrs-shaders: totk_xlate (MacNativeGames, MIT) around the Ryujinx 1.3.2 shader translator (MIT), published self-contained with the .NET runtime (MIT) | MIT | licenses/Ryujinx.txt, third_party/shader_translator/LICENSE |
+| UltraTears Launcher.exe | The launcher (GPL-3.0-or-later) with SDL3 (zlib), Dear ImGui (MIT), nanosvg (zlib), stb_image (MIT), the fonts Inter and Montserrat Alternates (SIL OFL 1.1), libc++ (Apache-2.0 WITH LLVM-exception) | as listed | licenses/msys2/SDL3, licenses/imgui.txt, licenses/nanosvg.txt, licenses/stb.txt, licenses/OFL-Inter.txt, licenses/OFL-MontserratAlternates.txt |
+| deps/shaders | ultrs-shaders: totk_xlate (MacNativeGames, MIT) around the Ryujinx 1.3.2 shader translator (MIT) with this project's patches, published self-contained with the .NET runtime (MIT) | MIT | licenses/Ryujinx.txt, licenses/totk_xlate.txt |
 
-Sources: MSYS2 packages https://packages.msys2.org (CLANG64), Python https://www.python.org, Ryujinx
-https://github.com/Ryubing, MacNativeGames (third_party/README.md).
+Source code. The launcher and the shader translator come built; their source, like all of this project's, is at
+https://github.com/kuraeow/ultratears/tree/{commit} (src/launcher, third_party/shader_translator,
+third_party/maxwell_shader; tools/build_launcher.py and tools/build_xlate.py build them). Others: MSYS2 packages
+https://packages.msys2.org (CLANG64), Python https://www.python.org, unicorn https://github.com/unicorn-engine/unicorn,
+capstone https://github.com/capstone-engine/capstone, Ryujinx https://github.com/Ryubing, MacNativeGames
+(third_party/README.md).
 '''
+
+# The source tree in the package is what the build on the player's PC uses: what only builds the parts that come built
+# (the launcher, the shader translator), the developers' tools and GitHub's files stay in the repository.
+NOT_IN_PACKAGE = ['src/launcher', 'third_party/imgui', 'third_party/nanosvg', 'third_party/stb', 'assets/launcher',
+                  'assets/cover.png', 'third_party/maxwell_shader', 'third_party/shader_translator', 'tools/build_xlate.py',
+                  'tools/build_launcher.py', 'tools/make_package.py', 'tools/eden_xlate', 'tools/run_eden_xlate.py',
+                  'tools/compare_spirv_opt.py', 'tools/validate_spirv.py', 'tools/gen_nvn_thunks.py', 'tools/recon_code.py',
+                  'tools/recon_romfs.py', 'tools/dev_glsl_tree.py', 'tools/dev_lum.py', 'tools/dev_player_dump.py',
+                  'tools/dev_timeline.py', '.github', '.gitignore', '.gitattributes', 'PR.md', 'BUILDING.md']
+# licenses of what is compiled into the launcher and the translator, kept when their sources are left out
+LICENSE_COPIES = {'third_party/imgui/LICENSE.txt': 'imgui.txt', 'third_party/nanosvg/LICENSE.txt': 'nanosvg.txt',
+                  'third_party/stb/LICENSE': 'stb.txt', 'assets/launcher/fonts/OFL-Inter.txt': 'OFL-Inter.txt',
+                  'assets/launcher/fonts/OFL-MontserratAlternates.txt': 'OFL-MontserratAlternates.txt',
+                  'third_party/shader_translator/LICENSE': 'totk_xlate.txt'}
 
 
 def git(*args):
@@ -149,7 +169,8 @@ def copy_python(src, dst):
         if base.lower() in {p.lower() for p in PY_PACKAGES} or (name.endswith('.dist-info') and
                                                                name.split('-')[0].lower() in ('lz4', 'capstone', 'unicorn')):
             s = venv_site / name
-            (shutil.copytree(s, site / name, ignore=shutil.ignore_patterns('__pycache__')) if s.is_dir()
+            # without the import libraries and C headers (unicorn.lib alone is 50 MB): Python loads the DLLs
+            (shutil.copytree(s, site / name, ignore=shutil.ignore_patterns('__pycache__', '*.lib', 'include')) if s.is_dir()
              else shutil.copy2(s, site / name))
 
 
@@ -181,6 +202,16 @@ def main():
     with tarfile.open(fileobj=io.BytesIO(tar)) as t:
         t.extractall(out, filter='data')
     commit = git('rev-parse', '--short', 'HEAD').strip()
+    lic = out / 'licenses'
+    lic.mkdir()
+    for src, dst in LICENSE_COPIES.items():
+        shutil.copy2(ROOT / src, lic / dst)
+    for p in NOT_IN_PACKAGE:
+        p = out / p
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.is_file():
+            p.unlink()
     # deps/clang64
     used = clang64_files_used(home) | dll_closure(PROGRAMS)
     for f in sorted(used):
@@ -188,7 +219,6 @@ def main():
         dst = out / 'deps/clang64' / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dst)
-    lic = out / 'licenses'
     for pkg in LICENSES:
         d = PREFIX / 'share/licenses' / pkg
         if d.is_dir():
@@ -204,10 +234,11 @@ def main():
         sys.exit(f'{xlate} was not built from this source: run tools/build_xlate.py again')
     shutil.copy2(stamp, out / 'deps/shaders/source.txt')
     # the package's own tools: a build from it installs nothing (tools/deps_install.py)
-    (out / 'deps/installed.json').write_text(json.dumps({'python': 'package', 'clang64': 'package'}, indent=1))
+    (out / 'deps/installed.json').write_text(json.dumps({'python': 'package', 'clang64': 'package', 'shaders': 'package'},
+                                                        indent=1))
     shutil.copy2(ROOT / 'third_party/maxwell_shader/LICENSE.txt', lic / 'Ryujinx.txt')
     shutil.copy2(a.python / 'LICENSE.txt', lic / 'Python.txt')
-    (out / 'THIRD-PARTY-NOTICES.md').write_text(NOTICES)
+    (out / 'THIRD-PARTY-NOTICES.md').write_text(NOTICES.replace('{commit}', git('rev-parse', 'HEAD').strip()))
     (out / 'VERSION.txt').write_text(version.version_txt(a.version, commit))
     # the launcher, built from this commit (it holds no code of the game: shipped built)
     launcher = ROOT / 'dev-local/build/launcher-release'
