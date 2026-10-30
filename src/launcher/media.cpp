@@ -78,6 +78,28 @@ static Icon svg(SDL_Renderer *r, const char *name, float logical, float scale) {
     return icon;
 }
 
+static unsigned be16(const unsigned char *p) { return p[0] << 8 | p[1]; }
+static unsigned be32(const unsigned char *p) { return be16(p) << 16 | be16(p + 2); }
+
+// (ascender - descender) / unitsPerEm of a TrueType font: its whole height for a size of 1 em
+static float em_to_height(const unsigned char *d, size_t n) {
+    if (n < 12)
+        return 1;
+    unsigned head = 0, hhea = 0;
+    for (unsigned i = 0, count = be16(d + 4); i < count && 12 + 16 * i + 16 <= n; i++) {
+        const unsigned char *t = d + 12 + 16 * i;
+        if (!std::memcmp(t, "head", 4))
+            head = be32(t + 8);
+        if (!std::memcmp(t, "hhea", 4))
+            hhea = be32(t + 8);
+    }
+    if (!head || !hhea || head + 20 > n || hhea + 8 > n)
+        return 1;
+    float upem = (float)be16(d + head + 18);
+    int asc = (int16_t)be16(d + hhea + 4), desc = (int16_t)be16(d + hhea + 6);
+    return upem > 0 ? (asc - desc) / upem : 1;
+}
+
 static ImFont *font(const char *name, float px, const ImWchar *ranges) {
     const launcher_asset *a = asset(name);
     if (!a)
@@ -87,7 +109,25 @@ static ImFont *font(const char *name, float px, const ImWchar *ranges) {
     cfg.OversampleH = 2;
     cfg.PixelSnapH = false;
     std::snprintf(cfg.Name, sizeof cfg.Name, "%s %.0f", name, px);
+    // px is the font size as Figma and CSS mean it (the em). ImGui 1.91 sizes a font by its whole height, ascender to
+    // descender (hhea), 1.21 em for Inter and Montserrat: asked for the em, it drew every text a fifth too small.
+    px *= em_to_height(a->data, a->size);
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF((void *)a->data, (int)a->size, px, &cfg, ranges);
+}
+
+static std::vector<std::pair<ImFont *, float>> g_line;   // each font's line height (design pixels), as in the design
+
+float font_line(ImFont *f) {
+    for (auto &l : g_line)
+        if (l.first == f)
+            return l.second;
+    return f ? f->FontSize * 1.3f : 20;
+}
+
+static ImFont *style(const char *name, float em, float line, float scale, const ImWchar *ranges) {
+    ImFont *f = font(name, em * scale, ranges);
+    g_line.emplace_back(f, line);
+    return f;
 }
 
 void media_load(SDL_Renderer *r, float scale) {
@@ -101,11 +141,13 @@ void media_load(SDL_Renderer *r, float scale) {
     };
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
-    g_media.regular = font("Inter_18pt-Regular.ttf", 15 * scale, ranges);
-    g_media.medium = font("Inter_18pt-Medium.ttf", 15 * scale, ranges);
-    g_media.small = font("Inter_18pt-Regular.ttf", 13 * scale, ranges);
-    g_media.title = font("MontserratAlternates-Bold.ttf", 25 * scale, ranges);
-    g_media.brand = font("MontserratAlternates-SemiBold.ttf", 17 * scale, ranges);
+    g_line.clear();
+    // the design's text styles: size / line height in design pixels (Inter 15 / 20: the user, 2026-10-31)
+    g_media.regular = style("Inter_18pt-Regular.ttf", 15, 20, scale, ranges);
+    g_media.medium = style("Inter_18pt-Medium.ttf", 15, 20, scale, ranges);
+    g_media.small = style("Inter_18pt-Regular.ttf", 13, 18, scale, ranges);
+    g_media.title = style("MontserratAlternates-Bold.ttf", 25, 32, scale, ranges);
+    g_media.brand = style("MontserratAlternates-SemiBold.ttf", 17, 22, scale, ranges);
     io.FontDefault = g_media.regular;
     for (Icon *i : {&g_media.emblem, &g_media.pattern, &g_media.check, &g_media.error, &g_media.folder, &g_media.warn, &g_media.chevron})
         drop(*i);

@@ -19,7 +19,8 @@ static float window_scale(SDL_Window *w) {
 }
 
 int main(int, char **) {
-    if (!single_instance(TITLE))
+    const char *dev_shot = SDL_getenv("ULTRS_LAUNCHER_SHOT");   // development screenshots run beside a real launcher
+    if (!(dev_shot && *dev_shot) && !single_instance(TITLE))
         return 0;
     SDL_SetHint(SDL_HINT_APP_NAME, "UltraTears Launcher");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {

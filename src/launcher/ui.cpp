@@ -119,7 +119,8 @@ static void icon(const Icon &i, float x, float y, float size = 0) {
 struct Run { const char *text; ImU32 col; const char *url = nullptr; };
 
 static float rich(ImFont *f, float x, float y, float width, std::initializer_list<Run> runs, float line_h = 0) {
-    float lh = line_h ? line_h : f->FontSize / S * 1.45f;
+    float lh = line_h ? line_h : font_line(f);
+    float lead = (lh - f->FontSize / S) / 2;   // as Figma: the glyphs centred in their line
     float cx = 0, cy = 0, space = text_w(f, " ");
     bool trailing = false;   // the run before ended with a space
     for (const Run &r : runs) {
@@ -154,9 +155,10 @@ static float rich(ImFont *f, float x, float y, float width, std::initializer_lis
                 if (hovered_rect(P(x + w.x, y + w.y), P(x + w.x + w.w, y + w.y + lh)))
                     hov = true;
         for (const Word &w : words) {
-            text(f, x + w.x, y + w.y, r.col, w.s.c_str());
+            text(f, x + w.x, y + w.y + lead, r.col, w.s.c_str());
+            float base = y + w.y + lead + f->Ascent / S + 1.5f;   // under the baseline
             if (r.url && hov)
-                DL->AddLine(P(x + w.x, y + w.y + f->FontSize / S + 1), P(x + w.x + w.w, y + w.y + f->FontSize / S + 1), r.col, S);
+                DL->AddLine(P(x + w.x, base), P(x + w.x + w.w, base), r.col, S);
         }
         if (r.url && hov) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -683,19 +685,21 @@ static void header(bool lang) {
     ImGui::PopStyleVar();
 }
 
+// The heading as the design has it: y the top of its 32 px line (82: centred at 98), the subtitle's 20 px lines from 40
+// below (122), 650 wide. Returns where the subtitle (or the heading) ends.
 static float title(float y, const char *t, const char *sub) {
-    text(g_media.title, 36, y, C_TEXT, t);
-    float h = g_media.title->FontSize / S + 10;
-    if (sub)
-        h += rich(g_media.regular, 36, y + h, 680, {{sub, C_SUB}});
-    return y + h;
+    ImFont *f = g_media.title;
+    text(f, 36, y + (font_line(f) - f->FontSize / S) / 2, C_TEXT, t);
+    if (!sub)
+        return y + font_line(f);
+    return y + 40 + rich(g_media.regular, 36, y + 40, 650, {{sub, C_SUB}});
 }
 
 static std::string gb(double v) { return std::to_string((long)(v + 0.5)); }
 
 static void screen_dump() {
     bool data = U.dump_st == D_DATA;
-    float y = title(88, T(data ? "prep_title" : "dump_title"), T(data ? "data_sub" : "dump_sub")) + 24;
+    float y = title(82, T(data ? "prep_title" : "dump_title"), T(data ? "data_sub" : "dump_sub")) + 24;
     bool hov, down;
     if (U.dump_st == D_NONE || U.dump_st == D_CHECKING) {
         bool busy = U.dump_st == D_CHECKING;
@@ -864,18 +868,21 @@ static void step_rows(float y) {
 static void screen_build() {
     float y;
     if (U.done)
-        y = title(88, T("done_title"), nullptr) + 28;
+        y = title(84, T("done_title"), nullptr) + 21;   // the design: no subtitle
     else
-        y = title(88, T("prep_title"), T("prep_sub")) + 18;
+        y = title(82, T("prep_title"), T("prep_sub")) + 26;
     double f = U.done ? 1 : overall();
     char pct[16];
     SDL_snprintf(pct, sizeof pct, "%d%%", (int)(f * 100));
     if (!U.done) {
         const char *label = U.failed ? T("failed_title") : U.copy ? T("copying") : T("processing");
-        text(g_media.regular, 36, y, C_TEXT, label);
+        for (const Row &r : U.rows)   // the design: the step running names the bar
+            if (!U.failed && !U.copy && r.st == R_RUN)
+                label = T(r.name);
+        text(g_media.regular, 36, y + 1, C_TEXT, label);
     }
-    text(g_media.regular, 764 - text_w(g_media.regular, pct), y, C_TEXT, pct);
-    y += 26;
+    text(g_media.regular, 764 - text_w(g_media.regular, pct), y + 1, C_TEXT, pct);
+    y += 31;
     DL->AddRectFilled(P(36, y), P(764, y + 8), C_BAR, 4 * S);
     if (f > 0)
         DL->AddRectFilled(P(36, y), P(36 + 728 * (float)f, y + 8), U.failed ? C_BAR_FAIL : C_BAR_FILL, 4 * S);
@@ -893,8 +900,8 @@ static void screen_build_footer() {
     }
     if (U.failed) {
         std::string issues = std::string(ULTRS_REPO) + "/issues/new";
-        rich(g_media.small, 36, 416, 440, {{T("report1"), C_SUB}, {T("report_link"), C_TEXT, issues.c_str()}, {T("report2"), C_SUB}}, 17);
-        float w = text_w(g_media.medium, T("open_log")) + 64;
+        rich(g_media.small, 36, 416, 422, {{T("report1"), C_SUB}, {T("report_link"), C_TEXT, issues.c_str()}, {T("report2"), C_SUB}}, 17);
+        float w = text_w(g_media.medium, T("open_log")) + 70;
         if (button("open_log", T("open_log"), 764 - w, 408, w, 48, DARK))
             reveal_in_folder(log_path());
         return;
@@ -928,12 +935,12 @@ static void screen_build_footer() {
 }
 
 static void screen_hw() {
-    float y = title(88, T("hw_title"), nullptr) + 6;
+    float y = title(82, T("hw_title"), nullptr) + 8;
     std::string req = std::string(ULTRS_REPO) + (g_lang == LANG_RU ? "/blob/HEAD/README.ru.md" : "#requirements-for-either-method");
     y += rich(g_media.regular, 36, y, 700, {{T("hw_text1"), C_SUB}, {T("hw_link"), C_TEXT, req.c_str()}, {T("hw_text2"), C_SUB}});
-    y += 22;
+    y += 25;
     bool hov, down;
-    float w1 = text_w(g_media.medium, T("hw_go")) + 32, w2 = text_w(g_media.medium, T("cancel")) + 32;
+    float w1 = text_w(g_media.medium, T("hw_go")) + 36, w2 = text_w(g_media.medium, T("cancel")) + 36;
     if (button("hw_go", T("hw_go"), 36, y, w1, 40, PRIMARY)) {
         setup_answer(U.build, "yes");
         U.screen = SCR_BUILD;
@@ -962,18 +969,18 @@ static void screen_hw() {
 }
 
 static void screen_broken() {   // the exe without the rest of the zip: nothing to choose, only what to do
-    float y = title(88, T("broken_title"), nullptr) + 4;
+    float y = title(82, T("broken_title"), nullptr) + 4;
     rich(g_media.regular, 36, y, 700, {{T("broken_text"), C_SUB}});
 }
 
 static void screen_play() {
-    float y = title(88, T("play_title"), nullptr) + 4;
+    float y = title(82, T("play_title"), nullptr) + 4;
     std::string sub = Tf("play_sub", {{"path", U.install}});
     rich(g_media.regular, 36, y, 700, {{sub.c_str(), C_SUB}});
 }
 
 static void screen_update() {
-    float y = title(88, Tf("upd_title", {{"v", U.upd.version}}).c_str(), nullptr) + 6;
+    float y = title(82, Tf("upd_title", {{"v", U.upd.version}}).c_str(), nullptr) + 6;
     std::string from = Tf("upd_from", {{"old", U.version}, {"v", U.upd.version}});
     y += rich(g_media.regular, 36, y, 700, {{from.c_str(), C_SUB}, {" ", C_SUB}, {T("upd_notes"), C_TEXT, U.upd.page.c_str()}});
     y += 22;

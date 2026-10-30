@@ -95,6 +95,7 @@ struct Media {
 };
 extern Media g_media;
 void media_load(SDL_Renderer *r, float scale);   // fonts and icons at this scale (again when it changes)
+float font_line(ImFont *f);                       // the line height of a font's text style, design pixels
 
 // ---- ui.cpp
 void ui_init(SDL_Window *w);
