@@ -116,6 +116,7 @@ typedef struct entry {
     uint8_t has_layout, layout[8];
     struct entry *shape_next, *all_next, **all_pprev;
     struct entry *twin;                     // its copy for draws that sample it while it is their target (vkb_tex_feedback_copy)
+    struct entry **blk;                     // a compressed texture drawn through block views: per level, the target (vkb_tex_block_target)
 } entry;
 typedef struct { uint64_t serial; entry *e; } tslot;   // serial 0: free; e NULL: removed
 static tslot *g_tab;
@@ -177,6 +178,12 @@ static void wbq_remove(entry *e) {    // g_wbq_mu held
     for (int i = 0; i < g_nwbq; i++) if (g_wbq[i] == e) { g_wbq[i] = g_wbq[--g_nwbq]; break; }
     e->im.wb_pending = 0;
 }
+enum { BLK_LEVELS = 16 };
+static void side_free(entry *t) {    // an image kept beside an entry (twin, block target): destroyed when the GPU is done with it
+    for (int i = 0; i < t->nviews; i++) vkb_destroy_later(t->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vkb_destroy_later(VK_NULL_HANDLE, t->im.img, t->im.mem);
+    free(t);
+}
 static void entry_drop(entry *e) {   // g_mu held: out of the indexes, destroyed when the GPU is done with it
     if (e->im.wb_pending) { pthread_mutex_lock(&g_wbq_mu); wbq_remove(e); pthread_mutex_unlock(&g_wbq_mu); }
     for (int i = 0; i < g_nwbj; i++) if (g_wbj[i].e == e) g_wbj[i].e = NULL;
@@ -189,10 +196,10 @@ static void entry_drop(entry *e) {   // g_mu held: out of the indexes, destroyed
     if (e->all_next) e->all_next->all_pprev = e->all_pprev;
     for (int i = 0; i < e->nviews; i++) vkb_destroy_later(e->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
     vkb_destroy_later(VK_NULL_HANDLE, e->im.img, e->im.mem);
-    if (e->twin) {
-        for (int i = 0; i < e->twin->nviews; i++) vkb_destroy_later(e->twin->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
-        vkb_destroy_later(VK_NULL_HANDLE, e->twin->im.img, e->twin->im.mem);
-        free(e->twin);
+    if (e->twin) side_free(e->twin);
+    if (e->blk) {
+        for (int l = 0; l < BLK_LEVELS; l++) if (e->blk[l]) side_free(e->blk[l]);
+        free(e->blk);
     }
     free(e);
 }
@@ -249,9 +256,7 @@ vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im) {
     entry *t = e->twin;
     if (t && (t->im.format != im->format || t->im.width != im->width || t->im.height != im->height ||
               t->im.depth != im->depth || t->im.levels != im->levels || t->im.layers != im->layers)) {
-        for (int i = 0; i < t->nviews; i++) vkb_destroy_later(t->view[i], VK_NULL_HANDLE, VK_NULL_HANDLE);
-        vkb_destroy_later(VK_NULL_HANDLE, t->im.img, t->im.mem);
-        free(t);
+        side_free(t);
         e->twin = t = NULL;
     }
     if (!t && twin_make(e)) t = e->twin;
@@ -273,6 +278,110 @@ vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im) {
     vkb_image_use(cb, &t->im, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
     atomic_fetch_add(&g_fb_copies, 1);
     return &t->im;
+}
+// ---- GPU compression into BC formats (L21): TOTK draws the blocks of BC4 textures (its gloom noise volumes slice by
+// slice, and a 32x32 texture the sky reads) through a view of an uncompressed format whose texel is one block (RGBA16UI
+// for BC4's 8 bytes). The draws were left out and the textures stayed empty. A Vulkan driver attaches such a view only
+// if it allows block-texel views as targets (none for slices of a 3D image), so the draws go to an uncompressed image of
+// the level's size in blocks (one per level, kept, the level's layers or 3D slices as its layers), and the pass end
+// copies it into the level: copies between a compressed and an uncompressed format of one block size are core Vulkan.
+// A new one starts from the level's contents. TOTK does this at startup: a few KiB per pass. TOTK_VK_BLOCK_TARGETS=0: off.
+typedef struct { entry *src, *blk; uint32_t level; } blk_pending;
+static __thread blk_pending t_blk[8];   // this recording thread's pass: block targets to copy at its end
+static __thread int t_nblk;
+static entry *blk_make(const entry *src, uint32_t level, VkFormat f, int nvn_format) {   // g_mu held
+    const vkb_image *s = &src->im;
+    int bw = 1, bh = 1;
+    nvn_fmt_bpb(s->d.format, &bw, &bh);
+    uint32_t lw = s->width >> level ? s->width >> level : 1, lh = s->height >> level ? s->height >> level : 1;
+    uint32_t w = (lw + (uint32_t)bw - 1) / (uint32_t)bw, h = (lh + (uint32_t)bh - 1) / (uint32_t)bh;
+    uint32_t layers = s->depth > 1 ? (s->depth >> level ? s->depth >> level : 1) : s->layers;
+    entry *t = calloc(1, sizeof *t);
+    if (!t) return NULL;
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
+        .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    if (vk.vkCreateImage(vkc.device, &ci, NULL, &t->im.img) != VK_SUCCESS) { free(t); return NULL; }
+    VkMemoryRequirements req;
+    vk.vkGetImageMemoryRequirements(vkc.device, t->im.img, &req);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size,
+                               .memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    vkb_mtag = MT_IMAGE;
+    if (ai.memoryTypeIndex == UINT32_MAX || vk.vkAllocateMemory(vkc.device, &ai, NULL, &t->im.mem) != VK_SUCCESS) {
+        vk.vkDestroyImage(vkc.device, t->im.img, NULL);
+        free(t);
+        return NULL;
+    }
+    vk.vkBindImageMemory(vkc.device, t->im.img, t->im.mem, 0);
+    VkImage img = t->im.img;
+    VkDeviceMemory mem = t->im.mem;
+    t->im = *s;   // the texture's description, as a single-level 2D (array) texture of the view format
+    t->im.img = img; t->im.mem = mem; t->im.layout = VK_IMAGE_LAYOUT_UNDEFINED; t->im.format = f; t->im.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    t->im.width = w; t->im.height = h; t->im.depth = 1; t->im.layers = layers; t->im.levels = 1;
+    t->im.astc = t->im.bc7 = t->im.compressed = 0; t->im.usage = ci.usage; t->im.gpu_written = 1; t->im.storage = NULL;
+    t->im.cpu_visible = 0; t->im.wb_pending = 0; t->im.refresh_from = NULL; t->im.uploading = 0;
+    t->im.d.format = nvn_format; t->im.d.width = w; t->im.d.height = h; t->im.d.depth = 1; t->im.d.levels = 1;
+    t->im.d.target = layers > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D;
+    return t;
+}
+// Between the texture's level and its block target (into_texture: target -> level). The extent is in the source's texels.
+static void blk_copy(VkCommandBuffer cb, vkb_image *im, vkb_image *b, uint32_t level, int into_texture) {
+    vkb_image_use(cb, into_texture ? b : im, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vkb_image_use(cb, into_texture ? im : b, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    int is3d = im->depth > 1;
+    uint32_t lw = im->width >> level ? im->width >> level : 1, lh = im->height >> level ? im->height >> level : 1;
+    VkImageSubresourceLayers bs = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, b->layers}, ts = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, is3d ? 1 : b->layers};
+    VkImageCopy r = {.srcSubresource = into_texture ? bs : ts, .dstSubresource = into_texture ? ts : bs,
+                     .extent = {into_texture ? b->width : lw, into_texture ? b->height : lh, is3d ? b->layers : 1}};
+    vkb_checkpoint("block target copy", NULL, NULL);
+    vk.vkCmdCopyImage(cb, into_texture ? b->img : im->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, into_texture ? im->img : b->img,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+}
+VkImageView vkb_tex_block_target(VkCommandBuffer cb, vkb_image *im, const view_t *v, uint32_t *w, uint32_t *h) {
+    static int on = -1;
+    if (on < 0) { const char *s = getenv("TOTK_VK_BLOCK_TARGETS"); on = !s || *s != '0'; }
+    entry *e = (entry *)im;
+    if (!on || !im->compressed || im->bc7 || !v || !v->set_format || t_nblk == 8) return VK_NULL_HANDLE;
+    int bw = 1, bh = 1, vbw = 1, vbh = 1;
+    int bpb = nvn_fmt_bpb(im->d.format, &bw, &bh), vbpb = nvn_fmt_bpb(v->format, &vbw, &vbh);
+    VkFormat f = vkb_format(v->format, NULL, NULL);
+    uint32_t level = v->set_levels ? v->base_level : 0;
+    if (!bpb || bpb != vbpb || vbw != 1 || vbh != 1 || f == VK_FORMAT_UNDEFINED || level >= im->levels || level >= BLK_LEVELS)
+        return VK_NULL_HANDLE;
+    vkb_lock(&g_mu, LK_IMAGES);
+    if (!e->blk) e->blk = calloc(BLK_LEVELS, sizeof *e->blk);
+    entry *t = e->blk ? e->blk[level] : NULL;
+    if (t && t->im.format != f) { side_free(t); e->blk[level] = t = NULL; }
+    int fresh = 0;
+    if (!t && e->blk && (t = blk_make(e, level, f, v->format))) e->blk[level] = t, fresh = 1;
+    pthread_mutex_unlock(&g_mu);
+    if (!t) return VK_NULL_HANDLE;
+    static int said;
+    if (fresh && said++ < 16)
+        VLOG("block target: texture %llu (format %#x %ux%ux%u level %u) drawn as format %#x %ux%u, %u layers",
+             (unsigned long long)im->serial, im->d.format, im->width, im->height, im->depth > 1 ? im->depth : im->layers, level,
+             v->format, t->im.width, t->im.height, t->im.layers);
+    if (fresh) blk_copy(cb, im, &t->im, level, 0);
+    view_t pv = *v;
+    pv.set_levels = 0; pv.base_level = pv.nlevels = 0;
+    VkImageView view = vkb_view(&t->im, &pv, 1, -1);
+    if (!view) return VK_NULL_HANDLE;
+    vkb_image_use(cb, &t->im, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    int k = 0;
+    while (k < t_nblk && t_blk[k].blk != t) k++;
+    if (k == t_nblk) t_blk[t_nblk++] = (blk_pending){e, t, level};
+    *w = t->im.width;
+    *h = t->im.height;
+    return view;
+}
+void vkb_tex_block_flush(VkCommandBuffer cb) {
+    for (int k = 0; k < t_nblk; k++) {
+        blk_copy(cb, &t_blk[k].src->im, &t_blk[k].blk->im, t_blk[k].level, 1);
+        vkb_image_written(&t_blk[k].src->im);
+    }
+    t_nblk = 0;
 }
 static void aside_purge(void) {   // g_mu held: entries aside too long (or too many) go
     uint64_t now = vkb_frame();

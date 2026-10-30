@@ -1500,6 +1500,7 @@ static void pass_end(void) {
     if (!g_in_pass) return;
     vk.vkCmdEndRendering(vkb_cmd());
     pp_end(vkb_cmd());
+    vkb_tex_block_flush(vkb_cmd());
     g_in_pass = 0;
 }
 
@@ -1543,6 +1544,19 @@ static int pass_begin(VkExtent2D bare, uint32_t fb) {
         vkb_image *im = g_rt.color[i] ? vkb_image_of(g_rt.color[i]) : NULL;
         const view_t *v = g_rt.has_cview[i] ? &g_rt.cview[i] : NULL;
         if (im && im->refresh_from) vkb_tex_refresh(cb, im);   // newer contents at this memory in another size (not in a pass yet)
+        uint32_t bw, bh;
+        VkImageView bview = im && im->compressed && !vkb_view(im, v, 1, -1) ? vkb_tex_block_target(cb, im, v, &bw, &bh) : VK_NULL_HANDLE;
+        if (bview) {   // GPU compression: drawn into an image of blocks, copied into the texture at the pass end (L21)
+            color[i].imageView = bview;
+            color[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            color[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            g_pass_fb &= ~(1u << i);   // the draws may sample the texture: not this image
+            if (bw < w) w = bw;
+            if (bh < h) h = bh;
+            any = 1;
+            continue;
+        }
         if (!im || im->aspect != VK_IMAGE_ASPECT_COLOR_BIT || !vkb_view(im, v, 1, -1)) {
             if (im) vkb_audit(A_RT_NOT_ATTACHABLE, NULL);
             if (im) {   // once per texture: which views of which textures (GPU compression into block-sized texels, L19)

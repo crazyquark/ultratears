@@ -89,6 +89,11 @@ void vkb_depth_audit_bias(const vkb_image *depth, float units, float factor);
 int vkb_tex_refresh(VkCommandBuffer cb, vkb_image *im);   // outside a pass: the pending refresh_from copy; 1 if recorded
 
 vkb_image *vkb_tex_feedback_copy(VkCommandBuffer cb, vkb_image *im);   // outside a pass: a copy to sample im from (vkb_tex.c)
+// A compressed texture as a render target through an uncompressed view of its blocks (L21): outside a pass, the view of
+// an image of the level's size in blocks (w, h) that the pass draws into; vkb_tex_block_flush (after the pass) copies it
+// into the texture. VK_NULL_HANDLE when the view is not one of blocks.
+VkImageView vkb_tex_block_target(VkCommandBuffer cb, vkb_image *im, const view_t *v, uint32_t *w, uint32_t *h);
+void vkb_tex_block_flush(VkCommandBuffer cb);
 uint64_t vkb_tex_feedback_copies(void);
 int vkb_fb_general(void);   // no feedback loops: sampled targets attached in GENERAL and read in place (vkb_draw.c)
 vkb_image *vkb_image_of(const tex_t *t);   // creates it on first use; NULL for textures that cannot be images yet
