@@ -1677,6 +1677,14 @@ int vkb_tex_snap_wanted(const char *vkey, const char *fkey, uint64_t frame) {   
         if (d) g_snap_dir = d + 1;
     }
     if (g_snap_at_jump) at = g_snap_at_jump;
+    static const char *trig = (const char *)-1;   // TOTK_SNAP_FILE=<path>: the file appearing snaps the next frame (again each time)
+    static uint64_t checked;
+    if (trig == (const char *)-1) trig = getenv("TOTK_SNAP_FILE");
+    if (trig && *trig && nkeys && frame != checked && frame != (uint64_t)at) {
+        checked = frame;
+        FILE *f = fopen(trig, "rb");
+        if (f) { fclose(f); remove(trig); at = (long long)frame + 1; memset(done, 0, sizeof done); }
+    }
     if (at <= 0 || frame != (uint64_t)at) return 0;
     for (int i = 0; i < nkeys; i++) {
         size_t n = strlen(keys[i]);
@@ -1706,15 +1714,44 @@ void vkb_tex_snap_flush(void) {
     for (int k = 0; k < g_nsnap; k++) {
         dump_save(g_snap_dir, g_snap[k].prefix, g_snap[k].im, g_snap[k].px, g_snap[k].bpp);
         const vkb_image *im = g_snap[k].im;
+        if (im->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {   // the scene: mean light and the darkest tenth's
+            uint32_t np = im->width * im->height;
+            double sum = 0;
+            uint32_t hist[64] = {0};
+            for (uint32_t p = 0; p < np; p++) {
+                uint32_t v; memcpy(&v, g_snap[k].px + (size_t)p * 4, 4);
+                float l = 0.3f * uf(v & 0x7FF, 6) + 0.59f * uf((v >> 11) & 0x7FF, 6) + 0.11f * uf(v >> 22, 5);
+                sum += l;
+                int b = l <= 0 ? 0 : (int)(log2f(l) * 2 + 40); hist[b < 0 ? 0 : b > 63 ? 63 : b]++;
+            }
+            uint32_t acc = 0; int dark = 0;
+            while (dark < 63 && (acc += hist[dark]) < np / 10) dark++;
+            VLOG("snapshot %s%ux%u: scene mean %.5g, darkest tenth below 2^%.1f", g_snap[k].prefix, im->width, im->height, sum / np, (dark - 40) / 2.0);
+        }
+        if (im->format == VK_FORMAT_R16G16_SFLOAT) {   // RG16F: channel means
+            uint32_t np = im->width * im->height;
+            double ch[2] = {0};
+            for (uint32_t p = 0; p < np; p++) {
+                uint16_t h[2]; memcpy(h, g_snap[k].px + (size_t)p * 4, 4);
+                for (int q = 0; q < 2; q++) ch[q] += half_to_float(h[q]);
+            }
+            VLOG("snapshot %s%ux%u: rg %.5g %.5g", g_snap[k].prefix, im->width, im->height, ch[0] / np, ch[1] / np);
+        }
         if (g_snap[k].bpp == 8) {   // RGBA16F: per-channel means and pixels below 1 (flags and masks)
-            uint32_t np = im->width * im->height, below[4] = {0};
+            uint32_t np = im->width * im->height, below[4] = {0}, bad = 0, a50 = 0, a80 = 0;   // a50 / a80: alpha below 0.5 / 0.8
             double ch[4] = {0};
             for (uint32_t p = 0; p < np; p++) {
                 uint16_t h[4]; memcpy(h, g_snap[k].px + (size_t)p * 8, 8);
-                for (int q = 0; q < 4; q++) { float v = half_to_float(h[q]); ch[q] += v; if (v < 1.0f) below[q]++; }
+                int b = 0;
+                for (int q = 0; q < 4; q++) {
+                    if ((h[q] & 0x7c00) == 0x7c00) { b = 1; continue; }   // NaN / Inf: left out of the means
+                    float v = half_to_float(h[q]); ch[q] += v; if (v < 1.0f) below[q]++;
+                    if (q == 3) { a50 += v < 0.5f; a80 += v < 0.8f; }
+                }
+                bad += b;
             }
-            VLOG("snapshot %s%ux%u: rgba %.4g %.4g %.4g %.4g, below 1: %u %u %u %u of %u", g_snap[k].prefix, im->width, im->height,
-                 ch[0] / np, ch[1] / np, ch[2] / np, ch[3] / np, below[0], below[1], below[2], below[3], np);
+            VLOG("snapshot %s%ux%u: rgba %.4g %.4g %.4g %.4g, below 1: %u %u %u %u of %u, NaN/Inf pixels %u, alpha < 0.5: %u, < 0.8: %u", g_snap[k].prefix,
+                 im->width, im->height, ch[0] / np, ch[1] / np, ch[2] / np, ch[3] / np, below[0], below[1], below[2], below[3], np, bad, a50, a80);
         }
     }
     VLOG("snapshot: %d images to %s", g_nsnap, g_snap_dir);

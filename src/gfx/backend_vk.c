@@ -2010,6 +2010,12 @@ static void dump_check(uint64_t n) {
     static long long auto_at = -1;   // TOTK_DUMP_KEY_AT=<present>: F9 pressed there (scripted runs)
     if (auto_at == -1) { const char *e = getenv("TOTK_DUMP_KEY_AT"); auto_at = e ? atoll(e) : 0; }
     if (auto_at > 0 && n >= (uint64_t)auto_at) { auto_at = 0; vkb_dump_request(); }
+    static const char *trig = (const char *)-1;   // TOTK_DUMP_KEY_FILE=<path> (no keyboard: the Steam Deck): the file appearing is F9
+    if (trig == (const char *)-1) trig = getenv("TOTK_DUMP_KEY_FILE");
+    if (trig && *trig && n % 8 == 0) {
+        FILE *f = fopen(trig, "rb");
+        if (f) { fclose(f); remove(trig); vkb_dump_request(); }
+    }
     long long key_at = atomic_load(&g_dump_key_at);   // F9 with TOTK_DUMP_KEY=<dir>: <dir>/f<present>, the game goes on
     if (key_at > 0 && n >= (uint64_t)key_at && atomic_compare_exchange_strong(&g_dump_key_at, &key_at, 0)) {
         char dir[512];

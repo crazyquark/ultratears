@@ -1685,8 +1685,8 @@ static void trace_resources(const vkb_shader *sh, int stage) {
     }
     VLOG("%s", line);
     // TOTK_VK_PEEK=<key prefix>:<cbuf slot>:<first vec4>-<last vec4>: those constants of traced draws with that shader
-    const char *pk = getenv("TOTK_VK_PEEK");
-    size_t kl = pk && strchr(pk, ':') ? (size_t)(strchr(pk, ':') - pk) : 0;
+    for (const char *pk = getenv("TOTK_VK_PEEK"); pk && *pk; pk = strchr(pk, ';') ? strchr(pk, ';') + 1 : NULL) {   // (several: ';')
+    size_t kl = strchr(pk, ':') ? (size_t)(strchr(pk, ':') - pk) : 0;
     if (kl && sh->key && !strncmp(sh->key, pk, kl)) {
         int slot = 0, a = 0, b = 0;
         if (sscanf(pk + kl, ":%d:%d-%d", &slot, &a, &b) == 3 && slot >= 3 && slot < VKB_NCBUF) {
@@ -1697,6 +1697,7 @@ static void trace_resources(const vkb_shader *sh, int stage) {
                 VLOG("[draw]     c%d[%d] = %g %g %g %g", slot, v, f[0], f[1], f[2], f[3]);
             }
         }
+    }
     }
 }
 
