@@ -250,8 +250,13 @@ static int from_pack(void) {   // a folder only when TOTK_SHADER_DIR names one t
     static int v = -1;
     if (v < 0) {
         const char *d = getenv("TOTK_SHADER_DIR");
+#ifdef _WIN32
         DWORD a = d ? GetFileAttributesA(d) : INVALID_FILE_ATTRIBUTES;
         v = vkb_shpack_on() && !(a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY));
+#else
+        struct stat st;
+        v = vkb_shpack_on() && !(d && stat(d, &st) == 0 && S_ISDIR(st.st_mode));
+#endif
     }
     return v;
 }
@@ -430,8 +435,13 @@ static int load_module(vkb_shader *s, const char *key, int nvn_stage, uint32_t *
         char path[1024];
         snprintf(path, sizeof path, "%s/%s.res.json", cache_dir(), key);
         j = read_file(path, NULL);
+#ifdef _WIN32
         struct _stat64 st;
         s->stamp = _stat64(path, &st) == 0 ? stamp_of((uint64_t)st.st_mtime, (uint64_t)st.st_size) : 0;
+#else
+        struct stat st;
+        s->stamp = stat(path, &st) == 0 ? stamp_of((uint64_t)st.st_mtime, (uint64_t)st.st_size) : 0;
+#endif
         snprintf(path, sizeof path, "%s/%s.spv", cache_dir(), key);
         spv = (uint32_t *)read_file(path, &nspv);
     }
@@ -793,8 +803,14 @@ static void ahead_pack(void) {
 static void *ahead_thread(void *unused) {
     (void)unused;
     pthread_setname_np("totk-shader-ahead");
+#ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+#endif
     if (from_pack()) { ahead_pack(); return NULL; }
+#ifndef _WIN32
+    VLOG("shaders compiled ahead: only from the shader pack on this system (setup makes it)");
+    return NULL;
+#else
     char pattern[1024];
     snprintf(pattern, sizeof pattern, "%s/*.res.json", cache_dir());
     WIN32_FIND_DATAA fd;
@@ -839,6 +855,7 @@ static void *ahead_thread(void *unused) {
          (runtime_now_ns() - t0) / 1e9);
     vkb_shbin_compact();
     return NULL;
+#endif
 }
 static void ahead_start(void) {
     const char *e = getenv("TOTK_SHADER_AHEAD");
